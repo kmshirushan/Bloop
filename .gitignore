@@ -1,0 +1,4 @@
+﻿bin/
+obj/
+renderer/node_modules/
+.vs/

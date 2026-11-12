@@ -1,0 +1,26 @@
+<Window x:Class="Bloop.Desktop.Windows.MascotWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Bloop"
+        Width="260"
+        Height="260"
+        WindowStyle="None"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Focusable="False"
+        ShowActivated="False">
+    <WindowChrome.WindowChrome>
+        <WindowChrome GlassFrameThickness="-1"
+                      ResizeBorderThickness="0"
+                      CaptionHeight="0"
+                      UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+    <Grid Background="Transparent">
+        <wv2:WebView2 x:Name="MascotWebView"
+                      DefaultBackgroundColor="Transparent"
+                      Focusable="False" />
+    </Grid>
+</Window>
