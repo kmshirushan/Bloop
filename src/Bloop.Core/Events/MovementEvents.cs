@@ -23,3 +23,24 @@ public sealed record HopPlanEventArgs(
     bool IsUndockPopOut
 );
 
+public enum AutonomyDiagnosticStage
+{
+    SchedulerInitialized,
+    NextMovementScheduled,
+    EligibilityChecked,
+    EligibilityRejected,
+    TargetSelected,
+    MovementDispatched,
+    MovementCompleted,
+    MovementCancelled
+}
+
+public sealed record AutonomyDiagnosticEventArgs(
+    AutonomyDiagnosticStage Stage,
+    string Summary,
+    DateTimeOffset NextDueUtc,
+    string? RejectionReason = null,
+    DockingEdge SelectedEdge = DockingEdge.None,
+    DateTimeOffset Timestamp = default
+);
+

@@ -4,6 +4,7 @@ import { Lighting } from './Lighting';
 import { ExpressionController } from '../animation/ExpressionController';
 import { HopAnimationController } from '../animation/HopAnimationController';
 import { MouseController } from '../interaction/MouseController';
+import { AppearanceController } from '../appearance/AppearanceController';
 
 /**
  * Manages the transparent Three.js WebGLRenderer, camera, resize handling,
@@ -17,11 +18,13 @@ export class BloopScene {
   private readonly lighting: Lighting;
   private readonly expressions: ExpressionController;
   private readonly hopController: HopAnimationController;
+  private readonly appearanceController: AppearanceController;
   private readonly mouseController: MouseController;
 
   private rafId: number | null = null;
   private lastFrameTime = 0;
   private isContextLost = false;
+  private isHiddenByAwareness = false;
   private badgeTimeoutId: number | null = null;
 
   private readonly onResizeBound = () => this.onResize();
@@ -56,13 +59,16 @@ export class BloopScene {
 
     this.expressions = new ExpressionController(this.model);
     this.hopController = new HopAnimationController(this.model);
+    this.appearanceController = new AppearanceController(this.model, this.camera);
     this.mouseController = new MouseController(
       this.renderer.domElement,
       this.camera,
       this.model,
       this.expressions,
       this.hopController,
-      (label) => this.showStatusBadge(label)
+      this.appearanceController,
+      (label) => this.showStatusBadge(label),
+      (isHidden, isQuietMode) => this.onAwarenessStateChanged(isHidden, isQuietMode)
     );
 
     window.addEventListener('resize', this.onResizeBound);
@@ -92,7 +98,7 @@ export class BloopScene {
     this.lastFrameTime = performance.now();
     const tick = (now: number) => {
       this.rafId = requestAnimationFrame(tick);
-      if (this.isContextLost || document.hidden) return;
+      if (this.isContextLost || document.hidden || this.isHiddenByAwareness) return;
 
       const dt = (now - this.lastFrameTime) * 0.001;
       this.lastFrameTime = now;
@@ -102,6 +108,15 @@ export class BloopScene {
       this.renderer.render(this.scene, this.camera);
     };
     this.rafId = requestAnimationFrame(tick);
+  }
+
+  private onAwarenessStateChanged(isHidden: boolean, isQuietMode: boolean): void {
+    const wasHidden = this.isHiddenByAwareness;
+    this.isHiddenByAwareness = isHidden;
+    this.expressions.setQuietMode(isQuietMode);
+    if (wasHidden && !isHidden) {
+      this.lastFrameTime = performance.now();
+    }
   }
 
   private onResize(): void {
@@ -136,6 +151,7 @@ export class BloopScene {
       this.onContextRestoredBound
     );
     this.mouseController.dispose();
+    this.appearanceController.dispose();
     this.lighting.dispose();
     this.model.dispose();
     this.renderer.dispose();

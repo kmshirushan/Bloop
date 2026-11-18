@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Bloop.Core.Appearance;
 
 namespace Bloop.Core.Models;
 
@@ -62,6 +63,58 @@ public sealed record HostDockConfigPayload(
     [property: JsonPropertyName("offsetX")] double OffsetX,
     [property: JsonPropertyName("offsetY")] double OffsetY,
     [property: JsonPropertyName("visibleRatio")] double VisibleRatio
+);
+
+public sealed record HostPeekabooPayload(
+    [property: JsonPropertyName("edge")] string Edge,
+    [property: JsonPropertyName("durationMs")] int DurationMs
+);
+
+public sealed record HostEdgeBalancePayload(
+    [property: JsonPropertyName("edge")] string Edge,
+    [property: JsonPropertyName("durationMs")] int DurationMs
+);
+
+public sealed record HostNotificationBadgePayload(
+    [property: JsonPropertyName("unreadCount")] int UnreadCount
+);
+
+public sealed record HostNotificationReactionPayload(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("unreadCount")] int UnreadCount,
+    [property: JsonPropertyName("appDisplayName")] string? AppDisplayName = null,
+    [property: JsonPropertyName("title")] string? Title = null,
+    [property: JsonPropertyName("commandId")] string? CommandId = null
+);
+
+public sealed record HostAppearancePayload(
+    [property: JsonPropertyName("profileId")] string ProfileId,
+    [property: JsonPropertyName("character")] CharacterAppearance Character,
+    [property: JsonPropertyName("isPreview")] bool IsPreview = false
+);
+
+public sealed record HostAppearanceScalePayload(
+    [property: JsonPropertyName("characterScale")] double CharacterScale
+);
+
+public sealed record HostAccessoryUpdatePayload(
+    [property: JsonPropertyName("accessoryId")] string AccessoryId,
+    [property: JsonPropertyName("equip")] bool Equip,
+    [property: JsonPropertyName("accessoryTintColor")] string? AccessoryTintColor = null
+);
+
+public sealed record AppearanceAckPayload(
+    [property: JsonPropertyName("profileId")] string ProfileId,
+    [property: JsonPropertyName("preset")] string Preset,
+    [property: JsonPropertyName("characterScale")] double CharacterScale,
+    [property: JsonPropertyName("equippedAccessories")] IReadOnlyList<string> EquippedAccessories
+);
+
+public sealed record HostAwarenessStatePayload(
+    [property: JsonPropertyName("context")] string Context,
+    [property: JsonPropertyName("isHidden")] bool IsHidden,
+    [property: JsonPropertyName("isQuietMode")] bool IsQuietMode,
+    [property: JsonPropertyName("reason")] string Reason
 );
 
 public sealed record MascotPreferences(

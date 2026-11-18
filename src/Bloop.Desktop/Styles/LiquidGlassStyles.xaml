@@ -1,0 +1,506 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ==================== DEFAULT DESIGN TOKENS (Overridden Dynamically by GlassDesignSystem) ==================== -->
+    <CornerRadius x:Key="GlassWindowCornerRadius">16</CornerRadius>
+    <CornerRadius x:Key="GlassSectionCornerRadius">12</CornerRadius>
+    <CornerRadius x:Key="GlassCardCornerRadius">10</CornerRadius>
+
+    <LinearGradientBrush x:Key="GlassLevel1FillBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#E20D1E3A" Offset="0.0" />
+        <GradientStop Color="#EC09152B" Offset="0.52" />
+        <GradientStop Color="#F2060F20" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel1RimBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#66BAE6FD" Offset="0.0" />
+        <GradientStop Color="#2638BDF8" Offset="0.52" />
+        <GradientStop Color="#4438BDF8" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel1TopSpecularBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#00FFFFFF" Offset="0.0" />
+        <GradientStop Color="#78FFFFFF" Offset="0.22" />
+        <GradientStop Color="#5838BDF8" Offset="0.55" />
+        <GradientStop Color="#00FFFFFF" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <RadialGradientBrush x:Key="GlassLevel1AmbientGlowBrush" Center="0.18,0.08" GradientOrigin="0.18,0.08" RadiusX="0.75" RadiusY="0.55">
+        <GradientStop Color="#2A38BDF8" Offset="0.0" />
+        <GradientStop Color="#0038BDF8" Offset="1.0" />
+    </RadialGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel2FillBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#7A1A3152" Offset="0.0" />
+        <GradientStop Color="#660F1F38" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel2BorderBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#44BAE6FD" Offset="0.0" />
+        <GradientStop Color="#1A94A3B8" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel3CardFillBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#92233E66" Offset="0.0" />
+        <GradientStop Color="#7C152744" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel3CardUnreadFillBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#A8294B7A" Offset="0.0" />
+        <GradientStop Color="#8C172B4D" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel3CardBorderBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#4CE0F2FE" Offset="0.0" />
+        <GradientStop Color="#1C94A3B8" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel3CardUnreadBorderBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#9038BDF8" Offset="0.0" />
+        <GradientStop Color="#48E0F2FE" Offset="0.52" />
+        <GradientStop Color="#3438BDF8" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <SolidColorBrush x:Key="GlassLevel3InputFillBrush" Color="#9B0F1C34" />
+
+    <LinearGradientBrush x:Key="GlassLevel4FillBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#8826426C" Offset="0.0" />
+        <GradientStop Color="#6E162A4A" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassLevel4HoverBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#AF34588A" Offset="0.0" />
+        <GradientStop Color="#91203A62" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <SolidColorBrush x:Key="GlassLevel4PressedBrush" Color="#BE122340" />
+
+    <LinearGradientBrush x:Key="GlassLevel4BorderBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#5CBAE6FD" Offset="0.0" />
+        <GradientStop Color="#2694A3B8" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassPrimaryAccentFillBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#D80EA5E9" Offset="0.0" />
+        <GradientStop Color="#C40284C7" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassPrimaryAccentHoverBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#EE38BDF8" Offset="0.0" />
+        <GradientStop Color="#D80284C7" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassPrimaryAccentBorderBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#B8E0F2FE" Offset="0.0" />
+        <GradientStop Color="#6E38BDF8" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="GlassDangerFillBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#5F881337" Offset="0.0" />
+        <GradientStop Color="#484C0519" Offset="1.0" />
+    </LinearGradientBrush>
+
+    <SolidColorBrush x:Key="GlassDangerBorderBrush" Color="#6EFB7185" />
+
+    <SolidColorBrush x:Key="GlassPrimaryTextBrush" Color="#F8FAFC" />
+    <SolidColorBrush x:Key="GlassSecondaryTextBrush" Color="#CBD5E1" />
+    <SolidColorBrush x:Key="GlassMutedTextBrush" Color="#94A3B8" />
+    <SolidColorBrush x:Key="GlassAccentTextBrush" Color="#7DD3FC" />
+
+    <!-- ==================== LEVEL 2 SECTION CONTAINER STYLE ==================== -->
+    <Style x:Key="GlassSectionBorderStyle" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource GlassLevel2FillBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassLevel2BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{DynamicResource GlassSectionCornerRadius}" />
+        <Setter Property="Padding" Value="13,11" />
+        <Setter Property="Margin" Value="0,0,0,10" />
+    </Style>
+
+    <!-- ==================== LEVEL 4 GLASS BUTTON STYLES ==================== -->
+    <Style x:Key="GlassSecondaryButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource GlassLevel4FillBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource GlassPrimaryTextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassLevel4BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="9,5" />
+        <Setter Property="FontSize" Value="11.5" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="BtnBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource GlassLevel4HoverBrush}" />
+                            <Setter TargetName="BtnBorder" Property="BorderBrush" Value="{DynamicResource GlassPrimaryAccentBorderBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource GlassLevel4PressedBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="BtnBorder" Property="BorderBrush" Value="{DynamicResource GlassAccentTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="BtnBorder" Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="GlassPrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource GlassSecondaryButtonStyle}">
+        <Setter Property="Background" Value="{DynamicResource GlassPrimaryAccentFillBrush}" />
+        <Setter Property="Foreground" Value="#FFFFFF" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassPrimaryAccentBorderBrush}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="BtnBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource GlassPrimaryAccentHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="BtnBorder" Property="Opacity" Value="0.88" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="BtnBorder" Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="GlassDangerButtonStyle" TargetType="Button" BasedOn="{StaticResource GlassSecondaryButtonStyle}">
+        <Setter Property="Background" Value="{DynamicResource GlassDangerFillBrush}" />
+        <Setter Property="Foreground" Value="#FDA4AF" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassDangerBorderBrush}" />
+    </Style>
+
+    <Style x:Key="GlassIconButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource GlassSecondaryTextBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="7,3" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="IconBorder"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="6"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="IconBorder" Property="Background" Value="{DynamicResource GlassLevel4HoverBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource GlassPrimaryTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="IconBorder" Property="Background" Value="{DynamicResource GlassLevel4PressedBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== GLASS CHECKBOX STYLE ==================== -->
+    <Style x:Key="GlassCheckBoxStyle" TargetType="CheckBox">
+        <Setter Property="Foreground" Value="{DynamicResource GlassPrimaryTextBrush}" />
+        <Setter Property="FontSize" Value="11.5" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Margin" Value="0,0,0,6" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <Grid Background="Transparent">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="CheckBoxWell"
+                                Width="17"
+                                Height="17"
+                                CornerRadius="5"
+                                Background="{DynamicResource GlassLevel3InputFillBrush}"
+                                BorderBrush="{DynamicResource GlassLevel4BorderBrush}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center"
+                                Margin="0,0,8,0">
+                            <Path x:Name="CheckGlyph"
+                                  Data="M 3.2,8.5 L 6.8,12.0 L 13.8,4.5"
+                                  Stroke="#FFFFFF"
+                                  StrokeThickness="1.8"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  Visibility="Collapsed" />
+                        </Border>
+                        <ContentPresenter Grid.Column="1"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="CheckBoxWell" Property="Background" Value="{DynamicResource GlassPrimaryAccentFillBrush}" />
+                            <Setter TargetName="CheckBoxWell" Property="BorderBrush" Value="{DynamicResource GlassPrimaryAccentBorderBrush}" />
+                            <Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="CheckBoxWell" Property="BorderBrush" Value="{DynamicResource GlassAccentTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="CheckBoxWell" Property="BorderBrush" Value="{DynamicResource GlassAccentTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== GLASS TEXTBOX STYLE ==================== -->
+    <Style x:Key="GlassTextBoxStyle" TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource GlassLevel3InputFillBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource GlassPrimaryTextBrush}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource GlassAccentTextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassLevel4BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="7,4" />
+        <Setter Property="FontSize" Value="11.5" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="InputBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="6"
+                            SnapsToDevicePixels="True">
+                        <ScrollViewer x:Name="PART_ContentHost"
+                                      Margin="0"
+                                      VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="InputBorder" Property="BorderBrush" Value="{DynamicResource GlassPrimaryAccentBorderBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="InputBorder" Property="BorderBrush" Value="{DynamicResource GlassAccentTextBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== GLASS COMBOBOX STYLE ==================== -->
+    <ControlTemplate x:Key="GlassComboBoxToggleButton" TargetType="ToggleButton">
+        <Border x:Name="ToggleBorder"
+                Background="{DynamicResource GlassLevel4FillBrush}"
+                BorderBrush="{DynamicResource GlassLevel4BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="24" />
+                </Grid.ColumnDefinitions>
+                <Path Grid.Column="1"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Data="M 0,0 L 4,4 L 8,0"
+                      Stroke="{DynamicResource GlassAccentTextBrush}"
+                      StrokeThickness="1.5" />
+            </Grid>
+        </Border>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="ToggleBorder" Property="Background" Value="{DynamicResource GlassLevel4HoverBrush}" />
+                <Setter TargetName="ToggleBorder" Property="BorderBrush" Value="{DynamicResource GlassPrimaryAccentBorderBrush}" />
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="ToggleBorder" Property="Background" Value="{DynamicResource GlassLevel4PressedBrush}" />
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <Style x:Key="GlassComboBoxStyle" TargetType="ComboBox">
+        <Setter Property="Foreground" Value="{DynamicResource GlassPrimaryTextBrush}" />
+        <Setter Property="FontSize" Value="11.5" />
+        <Setter Property="Padding" Value="8,4" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="ItemContainerStyle">
+            <Setter.Value>
+                <Style TargetType="ComboBoxItem">
+                    <Setter Property="Foreground" Value="#F8FAFC" />
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Padding" Value="8,5" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ComboBoxItem">
+                                <Border x:Name="ItemBorder"
+                                        Background="{TemplateBinding Background}"
+                                        CornerRadius="5"
+                                        Padding="{TemplateBinding Padding}"
+                                        Margin="2,1">
+                                    <ContentPresenter />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsHighlighted" Value="True">
+                                        <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource GlassPrimaryAccentFillBrush}" />
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="ItemBorder" Property="Background" Value="#5538BDF8" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton x:Name="ToggleButton"
+                                      Template="{StaticResource GlassComboBoxToggleButton}"
+                                      Focusable="False"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                      ClickMode="Press" />
+                        <ContentPresenter x:Name="ContentSite"
+                                          IsHitTestVisible="False"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                          Margin="9,4,26,4"
+                                          VerticalAlignment="Center"
+                                          HorizontalAlignment="Left" />
+                        <Popup x:Name="Popup"
+                               Placement="Bottom"
+                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               AllowsTransparency="True"
+                               Focusable="False"
+                               PopupAnimation="Fade">
+                            <Border x:Name="DropDownBorder"
+                                    MinWidth="{TemplateBinding ActualWidth}"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                    Background="#F40B192E"
+                                    BorderBrush="{DynamicResource GlassLevel1RimBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Padding="3"
+                                    Margin="0,2,0,0">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== GLASS SLIDER STYLE ==================== -->
+    <Style x:Key="GlassSliderStyle" TargetType="Slider">
+        <Setter Property="Height" Value="20" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Slider">
+                    <Grid VerticalAlignment="Center">
+                        <Border Height="5"
+                                CornerRadius="2.5"
+                                Background="{DynamicResource GlassLevel3InputFillBrush}"
+                                BorderBrush="{DynamicResource GlassLevel4BorderBrush}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center" />
+                        <Track x:Name="PART_Track">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="Slider.DecreaseLarge" Opacity="0" Focusable="False" />
+                            </Track.DecreaseRepeatButton>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="Slider.IncreaseLarge" Opacity="0" Focusable="False" />
+                            </Track.IncreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Width="14" Height="14">
+                                    <Thumb.Template>
+                                        <ControlTemplate TargetType="Thumb">
+                                            <Ellipse x:Name="ThumbCircle"
+                                                     Fill="{DynamicResource GlassPrimaryAccentFillBrush}"
+                                                     Stroke="#E0F2FE"
+                                                     StrokeThickness="1.4" />
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="ThumbCircle" Property="Fill" Value="{DynamicResource GlassPrimaryAccentHoverBrush}" />
+                                                    <Setter TargetName="ThumbCircle" Property="Stroke" Value="#FFFFFF" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Thumb.Template>
+                                </Thumb>
+                            </Track.Thumb>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== SLIM GLASS SCROLLBAR STYLE ==================== -->
+    <Style TargetType="ScrollBar">
+        <Setter Property="Width" Value="6" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                    <Grid Background="Transparent" Width="6" Margin="2,0,0,0">
+                        <Track x:Name="PART_Track" IsDirectionReversed="True">
+                            <Track.Thumb>
+                                <Thumb>
+                                    <Thumb.Template>
+                                        <ControlTemplate TargetType="Thumb">
+                                            <Border Background="#557DD3FC"
+                                                    CornerRadius="3" />
+                                        </ControlTemplate>
+                                    </Thumb.Template>
+                                </Thumb>
+                            </Track.Thumb>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

@@ -27,11 +27,10 @@ public sealed class WebViewService : IDisposable
         // Ensure transparent background before and after CoreWebView2 initialization
         _webView.DefaultBackgroundColor = System.Drawing.Color.Transparent;
 
-        var userDataFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Bloop",
-            "WebView2"
-        );
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var userDataFolder = !string.IsNullOrWhiteSpace(appData)
+            ? Path.Combine(appData, "Bloop", "WebView2")
+            : Path.Combine(AppContext.BaseDirectory, "WebView2Data");
 
         var env = await CoreWebView2Environment.CreateAsync(
             browserExecutableFolder: null,

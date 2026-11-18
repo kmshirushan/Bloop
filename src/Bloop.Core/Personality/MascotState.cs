@@ -12,6 +12,7 @@ public enum MascotState
     Curious = 30,
     Happy = 40,
     Surprised = 50,
+    Annoyed = 55,
     Notification = 60,
     Settling = 70,
     Dragging = 80

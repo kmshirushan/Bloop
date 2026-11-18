@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Windows;
 using System.Windows.Forms;
 using System.Windows.Media;
+using Bloop.Core.Behaviours;
 using Bloop.Core.Interfaces;
 using Bloop.Core.Movement;
 using Bloop.Core.Personality;
@@ -18,22 +19,29 @@ public sealed class WindowService : IDisposable
     private readonly ISettingsRepository _settings;
     private readonly IPersonalityEngine _personality;
     private readonly IMovementController _movement;
+    private readonly BehaviourScheduler _behaviourScheduler;
     private NotifyIcon? _notifyIcon;
     private Icon? _generatedTrayIcon;
+    private ToolStripMenuItem? _pauseMenuItem;
+    private ToolStripMenuItem? _focusMenuItem;
 
     public event EventHandler? ResetPositionRequested;
     public event EventHandler? ToggleDemoPanelRequested;
     public event EventHandler? OpenSettingsRequested;
+    public event EventHandler? DevAutonomousHopRequested;
+    public event EventHandler? ToggleFocusModeRequested;
     public event EventHandler? ExitRequested;
 
     public WindowService(
         ISettingsRepository settings,
         IPersonalityEngine personality,
-        IMovementController movement)
+        IMovementController movement,
+        BehaviourScheduler behaviourScheduler)
     {
         _settings = settings;
         _personality = personality;
         _movement = movement;
+        _behaviourScheduler = behaviourScheduler;
     }
 
     public void InitializeSystemTray()
@@ -43,6 +51,23 @@ public sealed class WindowService : IDisposable
 
         menu.Items.Add("Trigger Happy Bounce", null, (_, _) =>
             _personality.TryTransition(MascotState.Happy, force: true));
+        menu.Items.Add("Dev: Trigger Autonomous Hop", null, (_, _) =>
+            DevAutonomousHopRequested?.Invoke(this, EventArgs.Empty));
+        _pauseMenuItem = new ToolStripMenuItem("Pause Autonomous Behaviours", null, (_, _) =>
+        {
+            bool nextPaused = !_behaviourScheduler.Settings.GlobalBehavioursPaused;
+            var updated = _behaviourScheduler.Settings with { GlobalBehavioursPaused = nextPaused };
+            _behaviourScheduler.UpdateSettings(updated);
+            _settings.SaveBehaviourSettings(updated);
+            if (_pauseMenuItem is not null) _pauseMenuItem.Checked = nextPaused;
+        })
+        {
+            Checked = _behaviourScheduler.Settings.GlobalBehavioursPaused
+        };
+        menu.Items.Add(_pauseMenuItem);
+        _focusMenuItem = new ToolStripMenuItem("Focus Mode (Quiet Companion)", null, (_, _) =>
+            ToggleFocusModeRequested?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add(_focusMenuItem);
         menu.Items.Add("Toggle Companion Panel", null, (_, _) =>
             ToggleDemoPanelRequested?.Invoke(this, EventArgs.Empty));
         menu.Items.Add("Reset Mascot Position", null, (_, _) =>
@@ -65,6 +90,14 @@ public sealed class WindowService : IDisposable
             ToggleDemoPanelRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    public void UpdateFocusTrayCheckedState(bool isFocusModeActive)
+    {
+        if (_focusMenuItem is not null)
+        {
+            _focusMenuItem.Checked = isFocusModeActive;
+        }
+    }
+
     public WorkAreaBounds GetWorkAreaForWindow(Window window, double? overrideLeftDip = null, double? overrideTopDip = null)
     {
         var dpi = VisualTreeHelper.GetDpi(window);
@@ -84,6 +117,37 @@ public sealed class WindowService : IDisposable
             wRight / scaleX,
             wBottom / scaleY,
             devName
+        );
+    }
+
+    public WorkAreaBounds GetWorkAreaForDipPoint(double leftDip, double topDip)
+    {
+        var (wLeft, wTop, wRight, wBottom, devName) = NativeMethods.GetMonitorWorkAreaAndDevice((int)leftDip + 160, (int)topDip + 160);
+        return new WorkAreaBounds(wLeft, wTop, wRight, wBottom, devName);
+    }
+
+    public ForegroundWindowGeometry GetForegroundWindowGeometry(Window mascotWindow, IntPtr mascotHwnd, IntPtr panelHwnd, IntPtr settingsHwnd)
+    {
+        var dpi = VisualTreeHelper.GetDpi(mascotWindow);
+        double scaleX = dpi.DpiScaleX > 0 ? dpi.DpiScaleX : 1.0;
+        double scaleY = dpi.DpiScaleY > 0 ? dpi.DpiScaleY : 1.0;
+
+        var info = NativeMethods.GetForegroundWindowInfo(mascotHwnd, panelHwnd, settingsHwnd);
+        if (!info.IsValid)
+        {
+            return default;
+        }
+
+        return new ForegroundWindowGeometry(
+            IsValid: true,
+            LeftDip: info.Bounds.Left / scaleX,
+            TopDip: info.Bounds.Top / scaleY,
+            RightDip: info.Bounds.Right / scaleX,
+            BottomDip: info.Bounds.Bottom / scaleY,
+            IsMinimized: info.IsMinimized,
+            IsMaximized: info.IsMaximized,
+            IsFullscreen: info.IsFullscreen,
+            MonitorId: info.DeviceName
         );
     }
 

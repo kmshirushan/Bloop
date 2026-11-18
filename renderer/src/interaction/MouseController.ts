@@ -5,6 +5,8 @@ import {
   DockingEdgeName,
   HopAnimationController
 } from '../animation/HopAnimationController';
+import { AppearanceController } from '../appearance/AppearanceController';
+import { HostAppearanceMessagePayload } from '../appearance/AppearanceTypes';
 
 export interface IpcEnvelope<T = unknown> {
   type: string;
@@ -56,7 +58,9 @@ export class MouseController {
     private readonly model: BloopModel,
     private readonly expressions: ExpressionController,
     private readonly hopController: HopAnimationController,
-    private readonly onStateLabelChange?: (label: string) => void
+    private readonly appearanceController: AppearanceController,
+    private readonly onStateLabelChange?: (label: string) => void,
+    private readonly onAwarenessChange?: (isHidden: boolean, isQuietMode: boolean) => void
   ) {
     this.domElement.addEventListener('pointerdown', this.onPointerDownBound);
     window.addEventListener('pointermove', this.onPointerMoveBound);
@@ -133,6 +137,107 @@ export class MouseController {
             Number(msg.payload?.offsetX ?? 0),
             Number(msg.payload?.offsetY ?? 0)
           );
+          break;
+        }
+        case 'host:peekaboo': {
+          const durationMs = Number(msg.payload?.durationMs ?? 1600);
+          this.hopController.startPeekaboo(durationMs);
+          this.expressions.triggerCurious();
+          this.onStateLabelChange?.('Peekaboo!');
+          break;
+        }
+        case 'host:edge_balance': {
+          const durationMs = Number(msg.payload?.durationMs ?? 1800);
+          this.hopController.startEdgeBalance(durationMs);
+          this.expressions.triggerSurprised();
+          this.onStateLabelChange?.('Balancing!');
+          break;
+        }
+        case 'host:notification_badge': {
+          const count = Number(msg.payload?.unreadCount ?? 0);
+          this.updateUnreadBadge(count);
+          break;
+        }
+        case 'host:notification_reaction': {
+          const kind = String(msg.payload?.kind ?? 'subtle');
+          const count = Number(msg.payload?.unreadCount ?? 0);
+          const appName = msg.payload?.appDisplayName ? String(msg.payload.appDisplayName) : '';
+          const title = msg.payload?.title ? String(msg.payload.title) : '';
+          const commandId = msg.payload?.commandId ? String(msg.payload.commandId) : null;
+
+          this.updateUnreadBadge(count);
+
+          if (kind === 'entrance') {
+            this.expressions.triggerSurprised();
+            this.showToastPreview(appName ? `${appName}: ${title}` : title || 'Important notification');
+            this.onStateLabelChange?.(appName ? `Alert: ${appName}` : 'Important Alert!');
+          } else {
+            // Subtle edge glance: brief eye shift + curious expression
+            this.expressions.setCursorTarget(0.55, 0.35);
+            this.expressions.triggerCurious();
+            window.setTimeout(() => {
+              this.expressions.setCursorTarget(0, 0);
+            }, 950);
+            this.onStateLabelChange?.(count > 0 ? `${count} Unread` : 'Notification');
+          }
+
+          this.postToHost('renderer:animation_ack', {
+            state: `notification:${kind}`,
+            commandId
+          });
+          break;
+        }
+        case 'appearance:apply':
+        case 'appearance:update': {
+          const payload = msg.payload as unknown as HostAppearanceMessagePayload;
+          const ack = this.appearanceController.applyMessage(
+            payload,
+            Boolean(payload?.isPreview)
+          );
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'appearance:preview': {
+          const payload = msg.payload as unknown as HostAppearanceMessagePayload;
+          const ack = this.appearanceController.applyMessage(payload, true);
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'appearance:preview_cancel': {
+          const ack = this.appearanceController.cancelPreview();
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'appearance:scale': {
+          const scale = Number(msg.payload?.characterScale ?? 1.0);
+          const ack = this.appearanceController.applyScaleOnly(scale);
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'appearance:accessory_equip': {
+          const id = String(msg.payload?.accessoryId ?? '');
+          const tint = msg.payload?.accessoryTintColor
+            ? String(msg.payload.accessoryTintColor)
+            : undefined;
+          const ack = this.appearanceController.updateAccessory(id, true, tint);
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'appearance:accessory_remove': {
+          const id = String(msg.payload?.accessoryId ?? '');
+          const ack = this.appearanceController.updateAccessory(id, false);
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'appearance:reset': {
+          const ack = this.appearanceController.resetToDefault();
+          this.postToHost('appearance:applied', ack);
+          break;
+        }
+        case 'host:awareness_state': {
+          const isHidden = Boolean(msg.payload?.isHidden ?? false);
+          const isQuietMode = Boolean(msg.payload?.isQuietMode ?? false);
+          this.onAwarenessChange?.(isHidden, isQuietMode);
           break;
         }
       }
@@ -253,9 +358,7 @@ export class MouseController {
 
     this.clickTimeoutId = window.setTimeout(() => {
       this.clickTimeoutId = null;
-      this.expressions.triggerHappyBounce();
-      this.onStateLabelChange?.('Happy!');
-      this.postToHost('interaction:click', { state: 'happy' });
+      this.postToHost('interaction:click', { state: 'click' });
     }, 190);
   }
 
@@ -265,7 +368,6 @@ export class MouseController {
       window.clearTimeout(this.clickTimeoutId);
       this.clickTimeoutId = null;
     }
-    this.expressions.triggerHappyBounce();
     this.onStateLabelChange?.('Companion Panel');
     this.postToHost('interaction:double_click', {});
   }
@@ -278,6 +380,33 @@ export class MouseController {
         el.classList.toggle('active', edge === activeEdge);
       }
     }
+  }
+
+  private previewTimeoutId: number | null = null;
+
+  private updateUnreadBadge(unreadCount: number): void {
+    const badge = document.getElementById('unread-badge');
+    if (!badge) return;
+    if (unreadCount > 0) {
+      badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+      badge.classList.add('visible');
+    } else {
+      badge.classList.remove('visible');
+    }
+  }
+
+  private showToastPreview(text: string): void {
+    const preview = document.getElementById('toast-preview');
+    if (!preview) return;
+    preview.textContent = text;
+    preview.classList.add('visible');
+    if (this.previewTimeoutId !== null) {
+      window.clearTimeout(this.previewTimeoutId);
+    }
+    this.previewTimeoutId = window.setTimeout(() => {
+      preview.classList.remove('visible');
+      this.previewTimeoutId = null;
+    }, 3200);
   }
 
   private onPointerLeave(): void {

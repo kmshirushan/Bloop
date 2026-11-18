@@ -55,6 +55,55 @@
     #status-badge.visible {
       opacity: 1;
     }
+    #unread-badge {
+      position: absolute;
+      top: 14px;
+      right: 18px;
+      min-width: 22px;
+      height: 22px;
+      padding: 0 6px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font: 700 11px/1 'Segoe UI', system-ui, sans-serif;
+      color: #ffffff;
+      background: linear-gradient(135deg, #f43f5e, #e11d48);
+      border: 1.5px solid rgba(255, 255, 255, 0.85);
+      box-shadow: 0 2px 8px rgba(244, 63, 94, 0.55);
+      pointer-events: none;
+      opacity: 0;
+      transform: scale(0.6);
+      transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    #unread-badge.visible {
+      opacity: 1;
+      transform: scale(1);
+    }
+    #toast-preview {
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-6px);
+      max-width: 196px;
+      padding: 4px 10px;
+      border-radius: 10px;
+      font: 600 10.5px/1.25 'Segoe UI', system-ui, sans-serif;
+      color: #f8fafc;
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid rgba(56, 189, 248, 0.55);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+      opacity: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      transition: opacity 0.22s ease, transform 0.22s ease;
+    }
+    #toast-preview.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
     .edge-glow {
       position: absolute;
       pointer-events: none;
@@ -101,7 +150,7 @@
       box-shadow: 0 0 12px #38bdf8;
     }
   </style>
-  <script type="module" crossorigin src="./assets/index-CzsCitjj.js"></script>
+  <script type="module" crossorigin src="./assets/index-ExUqAf5s.js"></script>
 </head>
 <body>
   <div id="app">
@@ -109,6 +158,8 @@
     <div id="glow-right" class="edge-glow"></div>
     <div id="glow-top" class="edge-glow"></div>
     <div id="glow-bottom" class="edge-glow"></div>
+    <div id="unread-badge">0</div>
+    <div id="toast-preview"></div>
     <div id="status-badge">Idle</div>
   </div>
 </body>

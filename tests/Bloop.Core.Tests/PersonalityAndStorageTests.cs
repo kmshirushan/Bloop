@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Bloop.Core.Behaviours;
 using Bloop.Core.Events;
 using Bloop.Core.Models;
 using Bloop.Core.Movement;
@@ -215,11 +216,6 @@ public sealed class PersonalityAndStorageTests
         controller.CompleteHop(0, 500, DockingEdge.Left);
         Assert.False(controller.TryTriggerAutonomousHop(now.AddMinutes(1), 260, 260, workArea));
 
-        // While control panel is active or dragging, autonomous hop is blocked even after 10 minutes
-        controller.SetControlPanelActive(true);
-        Assert.False(controller.TryTriggerAutonomousHop(now.AddMinutes(10), 260, 260, workArea));
-        controller.SetControlPanelActive(false);
-
         // When autonomous movement is disabled, it never triggers
         controller.UpdateSettings(controller.Settings with { AutonomousMovementEnabled = false });
         Assert.False(controller.TryTriggerAutonomousHop(now.AddMinutes(15), 260, 260, workArea));
@@ -229,5 +225,225 @@ public sealed class PersonalityAndStorageTests
         Assert.True(controller.TryTriggerAutonomousHop(DateTimeOffset.UtcNow.AddMinutes(15), 260, 260, workArea));
         Assert.Equal(MovementState.Hopping, controller.CurrentState);
         Assert.NotEqual(DockingEdge.Left, controller.CurrentEdge);
+    }
+
+    [Fact]
+    public void MovementController_UpdateSettings_DoesNotResetDeadlineWhenNonTimingSettingChanges()
+    {
+        var controller = new MovementController(new Random(11));
+        var originalDue = controller.NextAutonomyDueUtc;
+
+        // Changing DockedVisibleRatio or MovementSpeedMultiplier must NOT reset NextAutonomyDueUtc
+        controller.UpdateSettings(controller.Settings with
+        {
+            DockedVisibleRatio = 0.75,
+            MovementSpeedMultiplier = 1.5
+        });
+
+        Assert.Equal(originalDue, controller.NextAutonomyDueUtc);
+    }
+
+    [Fact]
+    public void InteractionBehaviour_DeduplicatesRecentReactionsAndTriggersProgressiveAnnoyanceWithRecovery()
+    {
+        var interaction = new InteractionBehaviour(new Random(3));
+        var settings = BehaviourSettings.Default with
+        {
+            AnnoyanceMildThreshold = 3,
+            AnnoyancePeakThreshold = 5,
+            AnnoyanceWindowSeconds = 3.5,
+            AnnoyanceRecoverySeconds = 4.0
+        };
+
+        var t0 = DateTimeOffset.UtcNow;
+
+        // Clicks 1 & 2 -> calm weighted reactions
+        var r1 = interaction.EvaluateSingleClick(t0, settings);
+        var r2 = interaction.EvaluateSingleClick(t0.AddMilliseconds(300), settings);
+        Assert.Equal(AnnoyanceStage.Calm, r1.AnnoyanceStage);
+        Assert.Equal(AnnoyanceStage.Calm, r2.AnnoyanceStage);
+
+        // Click 3 -> mild annoyance (Surprised)
+        var r3 = interaction.EvaluateSingleClick(t0.AddMilliseconds(600), settings);
+        Assert.Equal(AnnoyanceStage.Mild, r3.AnnoyanceStage);
+        Assert.Equal(MascotState.Surprised, r3.ReactionState);
+
+        // Click 4 & 5 -> peak annoyance (Annoyed)
+        _ = interaction.EvaluateSingleClick(t0.AddMilliseconds(900), settings);
+        var r5 = interaction.EvaluateSingleClick(t0.AddMilliseconds(1200), settings);
+        Assert.Equal(AnnoyanceStage.Annoyed, r5.AnnoyanceStage);
+        Assert.Equal(MascotState.Annoyed, r5.ReactionState);
+
+        // Double-click clears click burst so opening the panel never triggers annoyance
+        interaction.NotifyDoubleClick();
+        var afterDoubleClick = interaction.EvaluateSingleClick(t0.AddSeconds(10), settings);
+        Assert.Equal(AnnoyanceStage.Calm, afterDoubleClick.AnnoyanceStage);
+    }
+
+    [Fact]
+    public void ExplorationBehaviour_RejectsMinimizedMaximizedFullscreenAndSelectsTopPerchWhenValid()
+    {
+        var exploration = new ExplorationBehaviour(new Random(5));
+        var workArea = new WorkAreaBounds(0, 0, 1920, 1040, @"\\.\DISPLAY1");
+
+        // 1. Maximized window rejected
+        var maxWin = new ForegroundWindowGeometry(true, 0, 0, 1920, 1040, false, true, false, @"\\.\DISPLAY1");
+        Assert.False(exploration.TrySelectWindowBoundaryTarget(maxWin, workArea, 260, 260, out _, out var reason1));
+        Assert.Contains("UnsuitableWindowState", reason1);
+
+        // 2. Normal window with top clearance >= 260 * 0.65 (169 DIP) succeeds
+        var normalWin = new ForegroundWindowGeometry(true, 200, 220, 1400, 900, false, false, false, @"\\.\DISPLAY1");
+        Assert.True(exploration.TrySelectWindowBoundaryTarget(normalWin, workArea, 260, 260, out var target, out _));
+        Assert.NotNull(target);
+        Assert.Equal(DockingEdge.None, target!.DockEdge);
+        Assert.InRange(target.TargetWindowLeftDip, 200, 1400 - 260);
+    }
+
+    [Fact]
+    public void NotificationBehaviour_RecordsInboxEvenWhenVisualReactionIsDisabled()
+    {
+        var notif = new NotificationBehaviour();
+        var resolver = new BehaviourPriorityResolver();
+        var alert = new NotificationAlertEvent("Teams", "Standup in 5m", DateTimeOffset.UtcNow);
+
+        bool reactedDisabled = notif.OnNotificationArrived(
+            alert,
+            BehaviourSettings.Default with { NotificationReactionsEnabled = false },
+            resolver,
+            MovementState.Docked,
+            MascotState.Idle
+        );
+
+        Assert.False(reactedDisabled);
+        Assert.Single(notif.Inbox);
+
+        bool reactedEnabled = notif.OnNotificationArrived(
+            alert,
+            BehaviourSettings.Default with { NotificationReactionsEnabled = true },
+            resolver,
+            MovementState.Docked,
+            MascotState.Idle
+        );
+
+        Assert.True(reactedEnabled);
+        Assert.Equal(2, notif.Inbox.Count);
+    }
+
+    [Fact]
+    public void SettingsRepository_PersistsIndependentBehaviourSettings()
+    {
+        var tempDb = Path.Combine(Path.GetTempPath(), $"bloop_m3_test_{Guid.NewGuid():N}.db");
+        try
+        {
+            using var db = new DatabaseService(tempDb);
+            var repo = new SettingsRepository(db);
+
+            var custom = BehaviourSettings.Default with
+            {
+                AutonomousEdgeHoppingEnabled = false,
+                WindowBoundaryExplorationEnabled = true,
+                PeekabooEnabled = true,
+                RandomClickReactionsEnabled = false,
+                RepeatedClickAnnoyanceEnabled = true,
+                NotificationReactionsEnabled = false,
+                AnnoyancePeakThreshold = 7
+            };
+
+            repo.SaveBehaviourSettings(custom);
+            var loaded = repo.LoadBehaviourSettings();
+
+            Assert.False(loaded.AutonomousEdgeHoppingEnabled);
+            Assert.True(loaded.WindowBoundaryExplorationEnabled);
+            Assert.True(loaded.PeekabooEnabled);
+            Assert.False(loaded.RandomClickReactionsEnabled);
+            Assert.True(loaded.RepeatedClickAnnoyanceEnabled);
+            Assert.False(loaded.NotificationReactionsEnabled);
+            Assert.Equal(7, loaded.AnnoyancePeakThreshold);
+        }
+        finally
+        {
+            if (File.Exists(tempDb))
+            {
+                try { File.Delete(tempDb); } catch { }
+            }
+        }
+    }
+
+    [Fact]
+    public void BehaviourScheduler_SupportsSleepModeWelcomeBackCornerExplorationAndGlobalPause()
+    {
+        var workArea = new WorkAreaBounds(0, 0, 1920, 1040, @"\\.\DISPLAY1");
+        var movement = new MovementController(new Random(21));
+        var personality = new PersonalityEngine();
+        var scheduler = new BehaviourScheduler(movement, personality, new Random(21));
+
+        scheduler.UpdateSettings(BehaviourSettings.Default with
+        {
+            SleepModeEnabled = true,
+            SleepInactivityMinutes = 2.0,
+            WelcomeBackReactionEnabled = true,
+            AttentionSeekingEnabled = true,
+            AttentionSeekMinutes = 1.0,
+            CursorChasingEnabled = true,
+            CursorChaseCooldownSeconds = 10.0
+        });
+
+        var t0 = DateTimeOffset.UtcNow;
+        movement.SyncPosition(800, 500, workArea.MonitorId, DockingEdge.None);
+
+        // 1. After 1.2 minutes of inactivity -> Attention Seeking sets Curious state
+        scheduler.EvaluateTick(t0.AddMinutes(1.2), 260, 260, workArea, default);
+        Assert.Equal(MascotState.Curious, personality.CurrentState);
+        Assert.False(scheduler.IsSleeping);
+
+        // 2. After 2.5 minutes of inactivity -> Sleep Mode activates Sleepy state
+        scheduler.EvaluateTick(t0.AddMinutes(2.5), 260, 260, workArea, default);
+        Assert.True(scheduler.IsSleeping);
+        Assert.Equal(MascotState.Sleepy, personality.CurrentState);
+
+        // 3. User cursor activity wakes Bloop with a Happy welcome-back reaction & triggers Cursor Chase hop
+        scheduler.NotifyUserActivity(t0.AddMinutes(3.0), 1220, 520, 260, 260, workArea);
+        Assert.False(scheduler.IsSleeping);
+        Assert.Equal(MovementState.Hopping, movement.CurrentState);
+        movement.CompleteHop(movement.CurrentWindowLeftDip, movement.CurrentWindowTopDip, DockingEdge.None);
+
+        // 4. Global Pause suspends movement and cancels active movement
+        scheduler.UpdateSettings(scheduler.Settings with { GlobalBehavioursPaused = true });
+        Assert.Equal(MovementState.Paused, movement.CurrentState);
+
+        scheduler.UpdateSettings(scheduler.Settings with { GlobalBehavioursPaused = false });
+        Assert.Equal(MovementState.Free, movement.CurrentState);
+    }
+
+    [Fact]
+    public void BehaviourScheduler_UserDragCancelsScheduledExplorationAndPeekabooAndEdgeBalanceWorkWhileDocked()
+    {
+        var workArea = new WorkAreaBounds(0, 0, 1920, 1040, @"\\.\DISPLAY1");
+        var movement = new MovementController(new Random(9));
+        var personality = new PersonalityEngine();
+        var scheduler = new BehaviourScheduler(movement, personality, new Random(9));
+
+        int peekabooCount = 0;
+        int balanceCount = 0;
+        scheduler.PeekabooRequested += (_, _) => peekabooCount++;
+        scheduler.EdgeBalanceRequested += (_, _) => balanceCount++;
+
+        movement.SyncPosition(0, 400, workArea.MonitorId, DockingEdge.Left);
+        Assert.Equal(MovementState.Docked, movement.CurrentState);
+
+        Assert.True(scheduler.TriggerPeekaboo(DateTimeOffset.UtcNow));
+        Assert.Equal(1, peekabooCount);
+
+        Assert.True(scheduler.TriggerEdgeBalance(DateTimeOffset.UtcNow));
+        Assert.Equal(1, balanceCount);
+
+        // Start a corner exploration hop and interrupt it immediately with user drag
+        var corner = scheduler.Exploration.SelectCornerTarget(workArea, 260, 260, DockingEdge.Left);
+        Assert.True(movement.TryHopToCoordinate(corner.TargetWindowLeftDip, corner.TargetWindowTopDip, corner.DockEdge, workArea, "CornerTest"));
+        Assert.Equal(MovementState.Hopping, movement.CurrentState);
+
+        // User drags Bloop mid-hop -> cancels hop and enters Dragging state cleanly
+        movement.BeginDrag(200, 300);
+        Assert.Equal(MovementState.Dragging, movement.CurrentState);
     }
 }

@@ -20,8 +20,9 @@ Bloop/
 
 1. **`Bloop.Core`**
    - **Responsibilities**:
-     - `PersonalityEngine` & `MascotState`: Mood/expression state machine (`Idle`, `Hover`, `Happy`, `Curious`, `Surprised`, `Sleepy`, `Dragging`, `Settling`, `Notification`) with priority rules and repeatable command dispatch.
-     - `MovementController`, `MovementState`, `DockingEdge`, `MovementSettings`, `DockingPosition`: Platform-independent physical movement & edge-docking subsystem (`Free`, `Dragging`, `PreparingToHop`, `Hopping`, `Docked`, `Undocking`, `Paused`), 4-edge work-area proximity detection, 60% peek-docking viewport offset math, and autonomous edge-hopping scheduler with cooldown and interruption guards.
+     - `PersonalityEngine` & `MascotState`: Mood/expression state machine (`Idle`, `Hover`, `Happy`, `Curious`, `Surprised`, `Sleepy`, `Annoyed`, `Dragging`, `Settling`, `Notification`) with priority rules and repeatable command dispatch.
+     - `MovementController`, `MovementState`, `DockingEdge`, `MovementSettings`, `DockingPosition`: Platform-independent physical movement & edge-docking subsystem (`Free`, `Dragging`, `PreparingToHop`, `Hopping`, `Docked`, `Undocking`, `Paused`), 4-edge work-area proximity detection, 60% peek-docking viewport offset math, structured `AutonomyDiagnosticEventArgs`, and autonomous edge-hopping scheduler.
+     - `BehaviourScheduler`, `BehaviourSettings`, `BehaviourPriorityResolver`, `InteractionBehaviour`, `ExplorationBehaviour`, `NotificationBehaviour`: Milestone 3 modular behaviour engine supporting weighted random click reactions with recent-history deduplication, progressive repeated-click annoyance with recovery, docked peekaboo, foreground window-boundary perching (geometry-only via Win32 `GetForegroundWindow` + `DwmGetWindowAttribute`), and decoupled notification inbox/reaction handling.
      - `IpcMessage<T>`: Strongly-typed JSON IPC message envelopes shared with the TypeScript renderer.
    - **Dependencies**: None (pure .NET 10 class library).
 
@@ -103,3 +104,29 @@ Communication between `Bloop.Desktop` (C#) and `renderer` (TypeScript) uses `win
 ### 3.3 Global Eye Tracking Without High CPU Overhead
 - Tracking the cursor only via DOM `pointermove` stops working the moment the cursor leaves the 260×260 mascot window.
 - Instead of installing a heavy global low-level mouse hook (`WH_MOUSE_LL`), `Bloop.Desktop` polls `GetCursorPos` on a lightweight 33ms (`~30 Hz`) timer only when the mascot is awake and visible, sending `host:cursor_position` only when the cursor actually moves (`delta > 1px`). When the cursor hasn't moved, zero IPC messages are sent.
+
+---
+
+## 4. Milestone 4 — Windows Notification Integration & Adaptive Architecture
+
+### 4.1 Documented WinRT Architecture (Option A)
+- Production notification integration uses **only documented Windows Runtime and .NET APIs** (`Windows.UI.Notifications.Management.UserNotificationListener`, `Microsoft.Win32.SystemEvents`). Zero undocumented `ntdll.dll` / WNF P/Invoke calls exist in the production solution.
+- `INotificationChangeSignal` (`AdaptiveNotificationChangeSignal` in `Bloop.Windows`) decouples change signaling from snapshot enumeration and repository persistence:
+  1. Subscribes to `UserNotificationListener.Current.NotificationChanged` when running with MSIX package identity (debounced by `350 ms`).
+  2. Subscribes to `SystemEvents.SessionSwitch` (pausing when locked, triggering immediate sync on unlock) and `SystemEvents.PowerModeChanged` (pausing on suspend, triggering immediate sync on resume).
+  3. Uses a configurable two-tier adaptive polling fallback when unpackaged:
+     - **Fast Active Window (`2.5s` interval for `15.0s`)**: Triggered on startup, panel open, session unlock, system resume, user inbox interaction, or whenever a snapshot diff detects added/removed notifications.
+     - **Idle Cadence (`12.0s` interval)**: Used during quiet periods. Based on our Phase 0 benchmark (`~12.3 ms` CPU per `GetNotificationsAsync(Toast)` call), a `12.0s` idle interval consumes `< 0.1%` average CPU while keeping inbox synchronization responsive.
+     - Automatically stops polling when notification integration is disabled or permission is denied/revoked.
+
+### 4.2 Unpackaged vs. Packaged Deployment Capabilities
+- **Works in Unpackaged WPF (`net10.0-windows10.0.19041.0`)**:
+  - `UserNotificationListener.Current.GetAccessStatus()` and `RequestAccessAsync()`.
+  - `GetNotificationsAsync(NotificationKinds.Toast)` full Action Center enumeration.
+  - Extracting `Id`, `CreationTime`, `AppInfo.AppUserModelId`, `AppInfo.DisplayInfo.DisplayName`, and `ToastGeneric` text elements (`Title`, `Body`).
+  - Individual OS notification dismissal via `RemoveNotification(uint id)`.
+- **Requires MSIX Package Identity (`uap3:userNotificationListener` capability)**:
+  - Subscribing to `UserNotificationListener.Current.NotificationChanged` (`0x80070490 E_NOTFOUND` when unpackaged).
+- **Future Advantage of Packaged MSIX Deployment**:
+  - Deploying Bloop with a signed MSIX package enables instant WinRT `NotificationChanged` push events without relying on the `2.5s` / `12.0s` adaptive polling fallback. `AdaptiveNotificationChangeSignal` automatically attempts `NotificationChanged += ...` on startup so packaged deployments gain push events with zero code changes.
+

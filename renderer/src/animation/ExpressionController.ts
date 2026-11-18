@@ -11,6 +11,8 @@ export type MascotStateName =
   | 'curious'
   | 'surprised'
   | 'sleepy'
+  | 'annoyed'
+  | 'notification'
   | 'dragging'
   | 'settling';
 
@@ -43,6 +45,7 @@ export class ExpressionController {
   private dragVelY = 0;
   private isHovered = false;
   private isDragging = false;
+  private isQuietMode = false;
 
   // Expression-specific body tilt and gaze overrides
   private expressionRollOffset = 0;
@@ -50,6 +53,7 @@ export class ExpressionController {
   private expressionLookOverrideX: number | null = null;
   private expressionLookOverrideY: number | null = null;
   private sleepyPhase = 0;
+  private annoyedPhase = 0;
 
   constructor(private readonly model: BloopModel) {}
 
@@ -60,6 +64,10 @@ export class ExpressionController {
   public setCursorTarget(normX: number, normY: number): void {
     this.targetLookX = THREE.MathUtils.clamp(normX, -1, 1);
     this.targetLookY = THREE.MathUtils.clamp(normY, -1, 1);
+  }
+
+  public setQuietMode(quiet: boolean): void {
+    this.isQuietMode = quiet;
   }
 
   public setHovered(hovered: boolean): void {
@@ -127,6 +135,32 @@ export class ExpressionController {
     this.squashStretchVelocity = -0.6;
   }
 
+  public triggerAnnoyed(): void {
+    this.currentState = 'annoyed';
+    this.stateTimer = 2.0;
+    this.annoyedPhase = 0;
+    this.expressionRollOffset = 0;
+    this.expressionPitchOffset = 0.12;
+    this.expressionLookOverrideX = 0;
+    this.expressionLookOverrideY = -0.1;
+    // Agitated double-huff compression
+    this.bounceVelocityY = 1.65;
+    this.squashStretchY = 0.74;
+    this.squashStretchVelocity = 4.8;
+  }
+
+  public triggerNotificationAlert(): void {
+    this.currentState = 'notification';
+    this.stateTimer = 1.8;
+    this.expressionRollOffset = 0;
+    this.expressionPitchOffset = -0.10;
+    this.expressionLookOverrideX = 0;
+    this.expressionLookOverrideY = 0.15;
+    this.bounceVelocityY = 2.1;
+    this.squashStretchY = 1.18;
+    this.squashStretchVelocity = 3.2;
+  }
+
   public setDragging(dragging: boolean): void {
     if (this.isDragging === dragging) return;
     this.isDragging = dragging;
@@ -163,6 +197,12 @@ export class ExpressionController {
       case 'sleepy':
         this.triggerSleepy();
         return;
+      case 'annoyed':
+        this.triggerAnnoyed();
+        return;
+      case 'notification':
+        this.triggerNotificationAlert();
+        return;
       default:
         this.currentState = state;
         this.expressionRollOffset = 0;
@@ -195,11 +235,14 @@ export class ExpressionController {
     this.currentLookX = THREE.MathUtils.lerp(this.currentLookX, desiredLookX, damp);
     this.currentLookY = THREE.MathUtils.lerp(this.currentLookY, desiredLookY, damp);
 
-    // 3. Idle float + breathing (slower, gentler when sleepy)
-    const idleTimeScale = this.currentState === 'sleepy' ? 0.45 : 1.0;
+    // 3. Idle float + breathing (slower, gentler when sleepy or in Focus/Quiet mode)
+    const idleTimeScale =
+      this.currentState === 'sleepy' ? 0.45 : this.isQuietMode ? 0.55 : 1.0;
     const idle = this.idleAnim.update(dt * idleTimeScale);
     if (this.currentState === 'sleepy') {
       this.sleepyPhase += dt;
+    } else if (this.currentState === 'annoyed') {
+      this.annoyedPhase += dt;
     }
 
     // 4. Damped spring for happy bounce vertical trajectory
@@ -243,8 +286,12 @@ export class ExpressionController {
 
     // 6. Body orientation & drag tilt
     const sleepyNod = this.currentState === 'sleepy' ? Math.sin(this.sleepyPhase * 2.0) * 0.08 : 0;
+    const annoyedShakeYaw =
+      this.currentState === 'annoyed'
+        ? Math.sin(this.annoyedPhase * 34.0) * 0.28 * Math.exp(-this.annoyedPhase * 0.9)
+        : 0;
     const hopRoll = hopMod?.rollZDelta ?? 0;
-    const targetRotY = this.currentLookX * 0.32;
+    const targetRotY = this.currentLookX * 0.32 + annoyedShakeYaw;
     const targetRotX =
       -this.currentLookY * 0.24 + this.dragVelY * 0.22 + this.expressionPitchOffset + sleepyNod;
     const targetRotZ =
@@ -281,11 +328,14 @@ export class ExpressionController {
     } else if (this.currentState === 'hover' || this.currentState === 'curious') {
       exprEyeScaleY = 1.1;
       exprEyeScaleX = 1.05;
-    } else if (this.currentState === 'surprised') {
+    } else if (this.currentState === 'surprised' || this.currentState === 'notification') {
       exprEyeScaleY = 1.28;
       exprEyeScaleX = 1.15;
     } else if (this.currentState === 'sleepy') {
       exprEyeScaleY = 0.42;
+    } else if (this.currentState === 'annoyed') {
+      exprEyeScaleY = 0.32;
+      exprEyeScaleX = 1.18;
     }
 
     const eyeOffsetX = this.currentLookX * 0.11;

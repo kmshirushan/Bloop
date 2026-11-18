@@ -1,3 +1,4 @@
+using Bloop.Core.Awareness;
 using Bloop.Core.Events;
 using Bloop.Core.Interfaces;
 
@@ -12,11 +13,16 @@ public sealed class MovementController : IMovementController
     private readonly Random _random;
     private DateTimeOffset _lastMovementCompletedUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _nextAutonomyDueUtc;
+    private DateTimeOffset _settlingUntilUtc = DateTimeOffset.MinValue;
     private bool _isControlPanelActive;
+    private bool _isPaused;
+    private string? _lastLoggedRejectionKey;
 
     public MovementState CurrentState { get; private set; } = MovementState.Free;
     public DockingEdge CurrentEdge { get; private set; } = DockingEdge.None;
     public MovementSettings Settings { get; private set; } = MovementSettings.Default;
+    public AwarenessPolicy CurrentAwarenessPolicy { get; private set; } = AwarenessPolicy.Default;
+    public DateTimeOffset NextAutonomyDueUtc => _nextAutonomyDueUtc;
 
     public double CurrentWindowLeftDip { get; private set; }
     public double CurrentWindowTopDip { get; private set; }
@@ -25,21 +31,39 @@ public sealed class MovementController : IMovementController
     public event EventHandler<MovementStateChangedEventArgs>? MovementStateChanged;
     public event EventHandler<DockingEdge>? EdgeCandidateChanged;
     public event EventHandler<HopPlanEventArgs>? HopRequested;
+    public event EventHandler<AutonomyDiagnosticEventArgs>? DiagnosticLogged;
 
     public MovementController(Random? random = null)
     {
         _random = random ?? new Random();
-        ScheduleNextAutonomousHop(DateTimeOffset.UtcNow, isInitial: true);
+        var now = DateTimeOffset.UtcNow;
+        ScheduleNextAutonomousHop(now, isInitial: true, reason: "ConstructorInit");
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.SchedulerInitialized,
+            $"Autonomy scheduler initialized (NextDue={_nextAutonomyDueUtc:HH:mm:ss} UTC)");
     }
 
     public void UpdateSettings(MovementSettings settings)
     {
+        var prev = Settings;
         Settings = settings;
-        ScheduleNextAutonomousHop(DateTimeOffset.UtcNow, isInitial: true);
+
+        // Only reschedule the movement deadline when autonomy timing or enablement settings actually changed!
+        bool timingChanged =
+            Math.Abs(prev.MinAutonomyIntervalMinutes - settings.MinAutonomyIntervalMinutes) > 1e-4 ||
+            Math.Abs(prev.MaxAutonomyIntervalMinutes - settings.MaxAutonomyIntervalMinutes) > 1e-4 ||
+            Math.Abs(prev.AutonomyCooldownMinutes - settings.AutonomyCooldownMinutes) > 1e-4 ||
+            (!prev.AutonomousMovementEnabled && settings.AutonomousMovementEnabled);
+
+        if (timingChanged)
+        {
+            ScheduleNextAutonomousHop(DateTimeOffset.UtcNow, isInitial: true, reason: "TimingSettingsUpdated");
+        }
     }
 
     public void SetControlPanelActive(bool isActive)
     {
+        // Note: Having the demonstration or settings window visible no longer blocks autonomous movement.
         _isControlPanelActive = isActive;
     }
 
@@ -55,14 +79,117 @@ public sealed class MovementController : IMovementController
         TransitionTo(edge == DockingEdge.None ? MovementState.Free : MovementState.Docked, edge);
     }
 
+    public (bool IsDeferredUntilHopComplete, double NewLeftDip, double NewTopDip, DockingPosition? DockPosition) RecalculatePositionForScaleChange(
+        double previousWindowSizeDip,
+        double newWindowSizeDip,
+        WorkAreaBounds workArea)
+    {
+        if (CurrentState is MovementState.Hopping or MovementState.PreparingToHop or MovementState.Undocking)
+        {
+            return (true, CurrentWindowLeftDip, CurrentWindowTopDip, null);
+        }
+
+        double centerX = CurrentWindowLeftDip + (previousWindowSizeDip * 0.5);
+        double centerY = CurrentWindowTopDip + (previousWindowSizeDip * 0.5);
+        double desiredLeft = centerX - (newWindowSizeDip * 0.5);
+        double desiredTop = centerY - (newWindowSizeDip * 0.5);
+
+        if (CurrentEdge != DockingEdge.None)
+        {
+            var dockPos = CalculateDockingPosition(
+                CurrentEdge,
+                desiredLeft,
+                desiredTop,
+                newWindowSizeDip,
+                newWindowSizeDip,
+                workArea);
+            CurrentWindowLeftDip = dockPos.WindowLeftDip;
+            CurrentWindowTopDip = dockPos.WindowTopDip;
+            CurrentMonitorId = workArea.MonitorId;
+            return (false, dockPos.WindowLeftDip, dockPos.WindowTopDip, dockPos);
+        }
+
+        double clampedLeft = Math.Clamp(
+            desiredLeft,
+            workArea.Left,
+            Math.Max(workArea.Left, workArea.Right - newWindowSizeDip));
+        double clampedTop = Math.Clamp(
+            desiredTop,
+            workArea.Top,
+            Math.Max(workArea.Top, workArea.Bottom - newWindowSizeDip));
+
+        CurrentWindowLeftDip = clampedLeft;
+        CurrentWindowTopDip = clampedTop;
+        CurrentMonitorId = workArea.MonitorId;
+        return (false, clampedLeft, clampedTop, null);
+    }
+
     public bool BeginDrag(double windowLeftDip, double windowTopDip)
     {
+        if (CurrentState is MovementState.Hopping or MovementState.PreparingToHop or MovementState.Undocking)
+        {
+            EmitDiagnostic(
+                AutonomyDiagnosticStage.MovementCancelled,
+                "Active hop cancelled by user drag interaction");
+        }
+
         CurrentWindowLeftDip = windowLeftDip;
         CurrentWindowTopDip = windowTopDip;
         CurrentEdge = DockingEdge.None;
         TransitionTo(MovementState.Dragging, DockingEdge.None);
         EdgeCandidateChanged?.Invoke(this, DockingEdge.None);
         return true;
+    }
+
+    public void CancelActiveMovement(string reason)
+    {
+        if (CurrentState is MovementState.Hopping or MovementState.PreparingToHop or MovementState.Undocking)
+        {
+            EmitDiagnostic(
+                AutonomyDiagnosticStage.MovementCancelled,
+                $"Movement cancelled: {reason}");
+            TransitionTo(CurrentEdge == DockingEdge.None ? MovementState.Free : MovementState.Docked, CurrentEdge);
+        }
+    }
+
+    public void SetPaused(bool paused)
+    {
+        if (_isPaused == paused) return;
+        _isPaused = paused;
+        if (paused)
+        {
+            CancelActiveMovement("GlobalPauseActivated");
+            TransitionTo(MovementState.Paused, CurrentEdge);
+            EmitDiagnostic(AutonomyDiagnosticStage.EligibilityRejected, "Global pause activated", "GlobalPauseActive");
+        }
+        else
+        {
+            TransitionTo(CurrentEdge == DockingEdge.None ? MovementState.Free : MovementState.Docked, CurrentEdge);
+            EmitDiagnostic(AutonomyDiagnosticStage.EligibilityChecked, "Global pause resumed");
+        }
+    }
+
+    public void ApplyAwarenessPolicy(AwarenessPolicy policy, DateTimeOffset nowUtc, TimeSpan? postRestoreSettling = null)
+    {
+        CurrentAwarenessPolicy = policy ?? AwarenessPolicy.Default;
+
+        if (!CurrentAwarenessPolicy.ShouldShowMascot)
+        {
+            CancelActiveMovement($"MascotHidden({CurrentAwarenessPolicy.Reason})");
+        }
+
+        if (postRestoreSettling.HasValue && postRestoreSettling.Value > TimeSpan.Zero)
+        {
+            var settleDue = nowUtc + postRestoreSettling.Value;
+            if (settleDue > _settlingUntilUtc)
+            {
+                _settlingUntilUtc = settleDue;
+            }
+            if (_nextAutonomyDueUtc < _settlingUntilUtc)
+            {
+                _nextAutonomyDueUtc = _settlingUntilUtc;
+            }
+        }
     }
 
     public DockingEdge EvaluateDragProximity(
@@ -134,10 +261,6 @@ public sealed class MovementController : IMovementController
         return candidate;
     }
 
-    /// <summary>
-    /// Computes the anchored window coordinates within the monitor work area and the 3D viewport offset
-    /// so that approximately Settings.DockedVisibleRatio (~60%) of Bloop's body remains visible.
-    /// </summary>
     public DockingPosition CalculateDockingPosition(
         DockingEdge edge,
         double desiredLeftDip,
@@ -199,21 +322,11 @@ public sealed class MovementController : IMovementController
         };
     }
 
-    /// <summary>
-    /// Maps the desired visible body ratio (e.g. 0.60 for 60% visible) to Three.js world-space root offset.
-    /// At camera Z=4.7, FOV=34 deg, the half-frustum extent at Z=0 is ~1.438 world units, and sphere radius is 1.0.
-    /// When the sphere center is shifted to +/-1.24 world units, ~40% of the diameter is clipped outside the frustum,
-    /// leaving ~60% of the mascot's projected body area cleanly visible against the window border.
-    /// </summary>
     public static (double OffsetX, double OffsetY) CalculateViewportOffset(DockingEdge edge, double visibleRatio)
     {
         if (edge == DockingEdge.None) return (0, 0);
 
         double clampedRatio = Math.Clamp(visibleRatio, 0.35, 0.90);
-        // Frustum half-width at z=0 is ~1.438, sphere radius = 1.0.
-        // Center shift so that (visibleDiameter = 2.0 * clampedRatio) remains inside [-1.438, +1.438]:
-        // edgeOfFrustum = 1.438; innerEdgeOfSphere = center - 1.0 => visibleWidth = 1.438 - (center - 1.0) = 2.438 - center
-        // Solve 2.438 - center = 2.0 * clampedRatio => center = 2.438 - 2.0 * clampedRatio.
         double shiftMagnitude = Math.Clamp(2.44 - (2.0 * clampedRatio), 0.55, 1.75);
 
         return edge switch
@@ -264,11 +377,11 @@ public sealed class MovementController : IMovementController
                 candidateEdge,
                 dockTarget.ViewportOffsetX,
                 dockTarget.ViewportOffsetY,
-                isUndockPopOut: false);
+                isUndockPopOut: false,
+                sourceReason: $"ManualDragTo{candidateEdge}");
             return;
         }
 
-        // Clamp within work area and settle freely
         double clampedLeft = Math.Clamp(
             releaseLeftDip,
             workArea.Left,
@@ -282,7 +395,7 @@ public sealed class MovementController : IMovementController
         CurrentWindowTopDip = clampedTop;
         CurrentEdge = DockingEdge.None;
         _lastMovementCompletedUtc = DateTimeOffset.UtcNow;
-        ScheduleNextAutonomousHop(_lastMovementCompletedUtc, isInitial: false);
+        ScheduleNextAutonomousHop(_lastMovementCompletedUtc, isInitial: false, reason: "ManualDragReleaseFree");
         TransitionTo(MovementState.Free, DockingEdge.None);
     }
 
@@ -325,7 +438,8 @@ public sealed class MovementController : IMovementController
             DockingEdge.None,
             0,
             0,
-            isUndockPopOut: true);
+            isUndockPopOut: true,
+            sourceReason: "ClickUndockPopOut");
         return true;
     }
 
@@ -335,11 +449,90 @@ public sealed class MovementController : IMovementController
         double windowHeightDip,
         WorkAreaBounds workArea)
     {
-        if (!CanRunAutonomousMovement(nowUtc))
+        if (!CanRunAutonomousMovement(nowUtc, out var rejectionReason))
+        {
+            // Deduplicate identical rejection reason category to avoid log flooding while still logging transitions
+            string rejectionKey = rejectionReason?.Split('(')[0] ?? "Rejected";
+            if (_lastLoggedRejectionKey != rejectionKey)
+            {
+                _lastLoggedRejectionKey = rejectionKey;
+                EmitDiagnostic(
+                    AutonomyDiagnosticStage.EligibilityRejected,
+                    $"Autonomous movement rejected: {rejectionReason}",
+                    rejectionReason: rejectionReason);
+            }
+            return false;
+        }
+
+        _lastLoggedRejectionKey = null;
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.EligibilityChecked,
+            "Autonomous movement eligible — selecting target edge");
+
+        return ExecuteAutonomousEdgeHop(windowWidthDip, windowHeightDip, workArea, "ScheduledAutonomy");
+    }
+
+    public bool TriggerManualAutonomousHop(
+        double windowWidthDip,
+        double windowHeightDip,
+        WorkAreaBounds workArea)
+    {
+        if (CurrentState is MovementState.Dragging or MovementState.Hopping or MovementState.PreparingToHop or MovementState.Undocking)
+        {
+            var reason = $"BusyState({CurrentState})";
+            EmitDiagnostic(
+                AutonomyDiagnosticStage.EligibilityRejected,
+                $"Manual dev trigger rejected: {reason}",
+                rejectionReason: reason);
+            return false;
+        }
+
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.EligibilityChecked,
+            "Developer manual trigger invoked — bypassing timer/cooldown");
+
+        return ExecuteAutonomousEdgeHop(windowWidthDip, windowHeightDip, workArea, "DeveloperManualTrigger");
+    }
+
+    public bool TryHopToCoordinate(
+        double targetLeftDip,
+        double targetTopDip,
+        DockingEdge targetEdge,
+        WorkAreaBounds workArea,
+        string reason)
+    {
+        if (CurrentState is MovementState.Dragging or MovementState.Hopping or MovementState.PreparingToHop or MovementState.Undocking or MovementState.Paused)
         {
             return false;
         }
 
+        CurrentMonitorId = workArea.MonitorId;
+        var (offsetX, offsetY) = CalculateViewportOffset(targetEdge, Settings.DockedVisibleRatio);
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.TargetSelected,
+            $"Selected target ({targetLeftDip:0},{targetTopDip:0}) edge={targetEdge} ({reason})",
+            selectedEdge: targetEdge);
+
+        StartHop(
+            CurrentWindowLeftDip,
+            CurrentWindowTopDip,
+            targetLeftDip,
+            targetTopDip,
+            targetEdge,
+            offsetX,
+            offsetY,
+            isUndockPopOut: false,
+            sourceReason: reason);
+        return true;
+    }
+
+    private bool ExecuteAutonomousEdgeHop(
+        double windowWidthDip,
+        double windowHeightDip,
+        WorkAreaBounds workArea,
+        string sourceReason)
+    {
+        CurrentMonitorId = workArea.MonitorId;
         var nextEdge = SelectNextAutonomousEdge(CurrentEdge);
         double margin = 48.0;
         double randomX = workArea.Left + margin + _random.NextDouble() * Math.Max(10, workArea.Width - windowWidthDip - 2 * margin);
@@ -353,6 +546,11 @@ public sealed class MovementController : IMovementController
             windowHeightDip,
             workArea);
 
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.TargetSelected,
+            $"Selected target edge={nextEdge} at ({dockPos.WindowLeftDip:0},{dockPos.WindowTopDip:0}) on {workArea.MonitorId}",
+            selectedEdge: nextEdge);
+
         StartHop(
             CurrentWindowLeftDip,
             CurrentWindowTopDip,
@@ -361,29 +559,74 @@ public sealed class MovementController : IMovementController
             nextEdge,
             dockPos.ViewportOffsetX,
             dockPos.ViewportOffsetY,
-            isUndockPopOut: false);
+            isUndockPopOut: false,
+            sourceReason: sourceReason);
 
         return true;
     }
 
-    public bool CanRunAutonomousMovement(DateTimeOffset nowUtc)
+    public bool CanRunAutonomousMovement(DateTimeOffset nowUtc) =>
+        CanRunAutonomousMovement(nowUtc, out _);
+
+    public bool CanRunAutonomousMovement(DateTimeOffset nowUtc, out string? rejectionReason)
     {
-        if (!Settings.AutonomousMovementEnabled || !Settings.EdgeDockingEnabled)
-            return false;
-
-        if (_isControlPanelActive)
-            return false;
-
-        if (CurrentState is MovementState.Dragging or MovementState.PreparingToHop or MovementState.Hopping or MovementState.Undocking or MovementState.Paused)
-            return false;
-
-        if (_lastMovementCompletedUtc != DateTimeOffset.MinValue &&
-            (nowUtc - _lastMovementCompletedUtc) < TimeSpan.FromMinutes(Settings.AutonomyCooldownMinutes))
+        if (!Settings.AutonomousMovementEnabled)
         {
+            rejectionReason = "AutonomousMovementDisabled";
             return false;
         }
 
-        return nowUtc >= _nextAutonomyDueUtc;
+        if (!CurrentAwarenessPolicy.ShouldShowMascot)
+        {
+            rejectionReason = $"AwarenessHidden({CurrentAwarenessPolicy.Reason})";
+            return false;
+        }
+
+        if (!CurrentAwarenessPolicy.AllowAutonomousMovement)
+        {
+            rejectionReason = $"AwarenessSuppressed({CurrentAwarenessPolicy.Reason})";
+            return false;
+        }
+
+        if (nowUtc < _settlingUntilUtc)
+        {
+            rejectionReason = $"PostRestoreSettling({(_settlingUntilUtc - nowUtc).TotalSeconds:0}s remaining)";
+            return false;
+        }
+
+        if (!Settings.EdgeDockingEnabled)
+        {
+            rejectionReason = "EdgeDockingDisabled";
+            return false;
+        }
+
+        if (CurrentState is MovementState.Dragging or MovementState.PreparingToHop or MovementState.Hopping or MovementState.Undocking or MovementState.Paused)
+        {
+            rejectionReason = $"ActiveMovementState({CurrentState})";
+            return false;
+        }
+
+        if (_lastMovementCompletedUtc != DateTimeOffset.MinValue)
+        {
+            var elapsedSinceLast = nowUtc - _lastMovementCompletedUtc;
+            var requiredCooldown = TimeSpan.FromMinutes(Settings.AutonomyCooldownMinutes);
+            if (elapsedSinceLast < requiredCooldown)
+            {
+                var remainingCooldown = requiredCooldown - elapsedSinceLast;
+                rejectionReason = $"CooldownActive({remainingCooldown.TotalSeconds:0}s remaining)";
+                return false;
+            }
+        }
+
+        if (nowUtc < _nextAutonomyDueUtc)
+        {
+            var remainingDue = _nextAutonomyDueUtc - nowUtc;
+            rejectionReason = $"NotYetDue({remainingDue.TotalSeconds:0}s remaining)";
+            return false;
+        }
+
+        rejectionReason = null;
+        return true;
     }
 
     public DockingEdge SelectNextAutonomousEdge(DockingEdge currentEdge)
@@ -396,7 +639,6 @@ public sealed class MovementController : IMovementController
             DockingEdge.Bottom
         ];
 
-        // Filter out the current edge so Bloop prefers a different edge
         var alternatives = new List<DockingEdge>(3);
         foreach (var edge in allEdges)
         {
@@ -415,8 +657,12 @@ public sealed class MovementController : IMovementController
         CurrentWindowTopDip = finalTopDip;
         CurrentEdge = finalEdge;
         _lastMovementCompletedUtc = DateTimeOffset.UtcNow;
-        ScheduleNextAutonomousHop(_lastMovementCompletedUtc, isInitial: false);
+        ScheduleNextAutonomousHop(_lastMovementCompletedUtc, isInitial: false, reason: "HopCompleted");
         TransitionTo(finalEdge == DockingEdge.None ? MovementState.Free : MovementState.Docked, finalEdge);
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.MovementCompleted,
+            $"Hop completed at ({finalLeftDip:0},{finalTopDip:0}) edge={finalEdge}; next due {_nextAutonomyDueUtc:HH:mm:ss} UTC",
+            selectedEdge: finalEdge);
     }
 
     private void StartHop(
@@ -427,7 +673,8 @@ public sealed class MovementController : IMovementController
         DockingEdge targetEdge,
         double targetOffsetX,
         double targetOffsetY,
-        bool isUndockPopOut)
+        bool isUndockPopOut,
+        string sourceReason)
     {
         double speed = Math.Clamp(Settings.MovementSpeedMultiplier, 0.5, 2.0);
         int anticipationMs = (int)Math.Round((isUndockPopOut ? 100 : 130) / speed);
@@ -437,7 +684,7 @@ public sealed class MovementController : IMovementController
         TransitionTo(MovementState.PreparingToHop, targetEdge);
         TransitionTo(MovementState.Hopping, targetEdge);
 
-        HopRequested?.Invoke(this, new HopPlanEventArgs(
+        var plan = new HopPlanEventArgs(
             startLeftDip,
             startTopDip,
             targetLeftDip,
@@ -449,19 +696,45 @@ public sealed class MovementController : IMovementController
             flightMs,
             landingMs,
             isUndockPopOut
-        ));
+        );
+
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.MovementDispatched,
+            $"Dispatched hop ({sourceReason}): ({startLeftDip:0},{startTopDip:0}) -> ({targetLeftDip:0},{targetTopDip:0}), edge={targetEdge}, duration={anticipationMs + flightMs + landingMs}ms",
+            selectedEdge: targetEdge);
+
+        HopRequested?.Invoke(this, plan);
     }
 
-    private void ScheduleNextAutonomousHop(DateTimeOffset fromUtc, bool isInitial)
+    private void ScheduleNextAutonomousHop(DateTimeOffset fromUtc, bool isInitial, string reason)
     {
-        double minMinutes = Math.Max(0.5, Settings.MinAutonomyIntervalMinutes);
-        double maxMinutes = Math.Max(minMinutes + 0.5, Settings.MaxAutonomyIntervalMinutes);
+        double minMinutes = Math.Max(0.05, Settings.MinAutonomyIntervalMinutes);
+        double maxMinutes = Math.Max(minMinutes + 0.05, Settings.MaxAutonomyIntervalMinutes);
         double delayMinutes = minMinutes + _random.NextDouble() * (maxMinutes - minMinutes);
         if (!isInitial)
         {
             delayMinutes = Math.Max(delayMinutes, Settings.AutonomyCooldownMinutes);
         }
         _nextAutonomyDueUtc = fromUtc.AddMinutes(delayMinutes);
+
+        EmitDiagnostic(
+            AutonomyDiagnosticStage.NextMovementScheduled,
+            $"Scheduled next autonomous hop in {delayMinutes * 60:0}s ({reason}, Due={_nextAutonomyDueUtc:HH:mm:ss} UTC)");
+    }
+
+    private void EmitDiagnostic(
+        AutonomyDiagnosticStage stage,
+        string summary,
+        string? rejectionReason = null,
+        DockingEdge selectedEdge = DockingEdge.None)
+    {
+        DiagnosticLogged?.Invoke(this, new AutonomyDiagnosticEventArgs(
+            stage,
+            summary,
+            _nextAutonomyDueUtc,
+            rejectionReason,
+            selectedEdge,
+            DateTimeOffset.UtcNow));
     }
 
     private void TransitionTo(MovementState nextState, DockingEdge edge)
@@ -472,4 +745,3 @@ public sealed class MovementController : IMovementController
         MovementStateChanged?.Invoke(this, new MovementStateChangedEventArgs(prev, nextState, edge, DateTimeOffset.UtcNow));
     }
 }
-

@@ -2,8 +2,9 @@ import * as THREE from 'three';
 
 /**
  * Procedural 3D model of Bloop:
- * - Glossy electric-blue spherical body with subtle vertical gradient & fresnel rim glow
- * - Two expressive white pill-shaped eyes mounted on a face rig
+ * - Glossy spherical body with vertical vertex-color gradient & physical clearcoat/sheen
+ * - Two expressive pill-shaped eyes mounted on a face rig
+ * - Dedicated attachment anchors (Head, Face, Front, Back) for 3D accessories
  * - Soft contact glow shadow underneath (transparent falloff)
  * Zero allocations during per-frame updates.
  */
@@ -18,8 +19,19 @@ export class BloopModel {
   public readonly rightEyeMesh: THREE.Mesh<THREE.CapsuleGeometry, THREE.MeshStandardMaterial>;
   public readonly shadowMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
 
+  // Attachment anchors for Milestone 5 3D accessories
+  public readonly headAnchor = new THREE.Group();
+  public readonly faceAnchor = new THREE.Group();
+  public readonly frontAnchor = new THREE.Group();
+  public readonly backAnchor = new THREE.Group();
+
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly materials: THREE.Material[] = [];
+
+  private readonly tempTopColor = new THREE.Color();
+  private readonly tempMidColor = new THREE.Color();
+  private readonly tempBottomColor = new THREE.Color();
+  private readonly tempLerpColor = new THREE.Color();
 
   constructor() {
     this.root.add(this.bodyPivot);
@@ -28,26 +40,8 @@ export class BloopModel {
     const sphereGeo = new THREE.SphereGeometry(1.0, 64, 64);
     this.geometries.push(sphereGeo);
 
-    // Inject vertex colors for a subtle vertical gradient (bright cyan-blue top -> deep electric blue bottom)
     const posAttr = sphereGeo.attributes.position;
     const colors = new Float32Array(posAttr.count * 3);
-    const topColor = new THREE.Color(0x38bdf8);    // Bright sky-electric blue
-    const midColor = new THREE.Color(0x0284c7);    // Vibrant electric blue
-    const bottomColor = new THREE.Color(0x1d4ed8); // Deep royal blue
-    const tempColor = new THREE.Color();
-
-    for (let i = 0; i < posAttr.count; i++) {
-      const y = posAttr.getY(i); // [-1, 1]
-      const t = THREE.MathUtils.clamp((y + 1.0) * 0.5, 0, 1);
-      if (t > 0.5) {
-        tempColor.lerpColors(midColor, topColor, (t - 0.5) * 2.0);
-      } else {
-        tempColor.lerpColors(bottomColor, midColor, t * 2.0);
-      }
-      colors[i * 3] = tempColor.r;
-      colors[i * 3 + 1] = tempColor.g;
-      colors[i * 3 + 2] = tempColor.b;
-    }
     sphereGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const bodyMat = new THREE.MeshPhysicalMaterial({
@@ -67,14 +61,16 @@ export class BloopModel {
     this.materials.push(bodyMat);
 
     this.bodyMesh = new THREE.Mesh(sphereGeo, bodyMat);
+    this.bodyMesh.renderOrder = 1;
     this.bodyPivot.add(this.bodyMesh);
+
+    this.updateBodyGradient('#0284C7', '#38BDF8');
 
     // 2. Expressive White Eyes (mounted slightly in front of sphere surface)
     this.faceGroup.position.set(0, 0.08, 0.88);
     this.bodyPivot.add(this.faceGroup);
 
     const eyeGeo = new THREE.CapsuleGeometry(0.105, 0.14, 16, 24);
-    // Flatten slightly along Z so eyes hug the sphere contour cleanly
     eyeGeo.scale(1.0, 1.0, 0.42);
     this.geometries.push(eyeGeo);
 
@@ -83,12 +79,17 @@ export class BloopModel {
       roughness: 0.18,
       metalness: 0.0,
       emissive: 0xe0f2fe,
-      emissiveIntensity: 0.22
+      emissiveIntensity: 0.22,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true
     });
     this.materials.push(eyeMat);
 
     this.leftEyeMesh = new THREE.Mesh(eyeGeo, eyeMat);
     this.rightEyeMesh = new THREE.Mesh(eyeGeo, eyeMat);
+    this.leftEyeMesh.renderOrder = 2;
+    this.rightEyeMesh.renderOrder = 2;
 
     // Subtle specular eye glint dots
     const glintGeo = new THREE.SphereGeometry(0.032, 12, 12);
@@ -115,7 +116,24 @@ export class BloopModel {
     this.faceGroup.add(this.leftEyeGroup);
     this.faceGroup.add(this.rightEyeGroup);
 
-    // 3. Soft translucent radial contact shadow below the floating mascot
+    // 3. Accessory Attachment Anchors
+    this.headAnchor.name = 'HeadAnchor';
+    this.headAnchor.position.set(0, 0.92, 0);
+    this.bodyPivot.add(this.headAnchor);
+
+    this.faceAnchor.name = 'FaceAnchor';
+    this.faceAnchor.position.set(0, 0.01, 0.09);
+    this.faceGroup.add(this.faceAnchor);
+
+    this.frontAnchor.name = 'FrontAnchor';
+    this.frontAnchor.position.set(0, -0.58, 0.05);
+    this.bodyPivot.add(this.frontAnchor);
+
+    this.backAnchor.name = 'BackAnchor';
+    this.backAnchor.position.set(0, 0.08, -0.78);
+    this.bodyPivot.add(this.backAnchor);
+
+    // 4. Soft translucent radial contact shadow below the floating mascot
     const shadowGeo = new THREE.PlaneGeometry(1.9, 1.9);
     shadowGeo.rotateX(-Math.PI / 2);
     this.geometries.push(shadowGeo);
@@ -150,8 +168,37 @@ export class BloopModel {
     this.root.add(this.shadowMesh);
   }
 
+  /**
+   * Updates the vertical vertex-color gradient on the sphere geometry in-place
+   * without reallocating buffers or recreating geometries.
+   */
+  public updateBodyGradient(bodyHex: string, accentHex: string): void {
+    const sphereGeo = this.bodyMesh.geometry;
+    const posAttr = sphereGeo.attributes.position;
+    const colorAttr = sphereGeo.attributes.color as THREE.BufferAttribute | undefined;
+    if (!colorAttr) return;
+
+    this.tempTopColor.set(accentHex || '#38BDF8');
+    this.tempMidColor.set(bodyHex || '#0284C7');
+    this.tempBottomColor.copy(this.tempMidColor).multiplyScalar(0.62);
+
+    const arr = colorAttr.array as Float32Array;
+    for (let i = 0; i < posAttr.count; i++) {
+      const y = posAttr.getY(i);
+      const t = THREE.MathUtils.clamp((y + 1.0) * 0.5, 0, 1);
+      if (t > 0.5) {
+        this.tempLerpColor.lerpColors(this.tempMidColor, this.tempTopColor, (t - 0.5) * 2.0);
+      } else {
+        this.tempLerpColor.lerpColors(this.tempBottomColor, this.tempMidColor, t * 2.0);
+      }
+      arr[i * 3] = this.tempLerpColor.r;
+      arr[i * 3 + 1] = this.tempLerpColor.g;
+      arr[i * 3 + 2] = this.tempLerpColor.b;
+    }
+    colorAttr.needsUpdate = true;
+  }
+
   public setShadowHeightFactor(heightOffset: number): void {
-    // As Bloop floats higher, shadow shrinks slightly and softens
     const scale = THREE.MathUtils.clamp(1.0 - heightOffset * 0.45, 0.72, 1.18);
     this.shadowMesh.scale.set(scale, 1.0, scale);
     this.shadowMesh.material.uniforms.uOpacity.value = THREE.MathUtils.clamp(
@@ -170,4 +217,3 @@ export class BloopModel {
     }
   }
 }
-
