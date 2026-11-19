@@ -138,27 +138,89 @@ public sealed class AwarenessCoordinator : IDisposable
             _lastSampledIdleDuration = _provider.GetUserIdleDuration();
         }
 
+        var (mouseMoved, _, _, mouseIdle) = _provider.SampleMouseActivity(nowUtc);
+
         ApplyObservationInternal(
             obs,
             _lastSampledIdleDuration,
             _provider.IsSessionLocked,
             _provider.IsSystemSuspended,
-            nowUtc);
+            nowUtc,
+            mouseIdle,
+            mouseMoved);
+    }
+
+    public bool NotifyPointerEnteredMascot(DateTimeOffset nowUtc)
+    {
+        if (_isDisposed) return false;
+
+        _diagnostics.RecordCustom("PointerEnteredMascot", "Pointer entered Bloop's interactive hit area");
+        bool woke = _policyResolver.TryWakeFromPointerEntry(nowUtc, out var wakeEvent);
+        if (wakeEvent is not null)
+        {
+            _diagnostics.RecordCustom(wakeEvent.EventName, wakeEvent.Summary);
+            EvaluateNow(nowUtc, sampleIdleNow: false);
+        }
+        return woke;
+    }
+
+    public bool TryRequestNotificationWake(
+        Bloop.Core.Notifications.NotificationImportance highestImportance,
+        int batchCount,
+        string? sourceApp)
+    {
+        if (_isDisposed) return false;
+
+        string summary = $"Source={sourceApp ?? "App"}, Importance={highestImportance}, Batch={batchCount}";
+        _diagnostics.RecordCustom("NotificationWakeRequested", $"Notification wake requested ({summary})");
+
+        if (highestImportance < Bloop.Core.Notifications.NotificationImportance.High)
+        {
+            _diagnostics.RecordCustom("NotificationWakeRejected", $"Ordinary notification does not wake Bloop ({summary})");
+            return false;
+        }
+
+        bool accepted = _policyResolver.TryWakeFromPriorityNotification(
+            summary,
+            Settings,
+            _behaviourScheduler.Settings.GlobalBehavioursPaused,
+            out var wakeEvent);
+
+        if (wakeEvent is not null)
+        {
+            _diagnostics.RecordCustom(wakeEvent.EventName, wakeEvent.Summary);
+        }
+
+        if (accepted)
+        {
+            EvaluateNow(DateTimeOffset.UtcNow, sampleIdleNow: false);
+        }
+
+        return accepted;
     }
 
     /// <summary>
     /// Allows deterministic end-to-end runtime verification of awareness scenarios
-    /// (FullScreen, Maximized, Focus, Inactivity, SessionLock, SystemSuspend).
+    /// (FullScreen, Maximized, Focus, Inactivity, Intelligent Sleep, SessionLock, SystemSuspend).
     /// </summary>
     public void EvaluateSyntheticObservation(
         ForegroundWindowObservation observation,
         TimeSpan idleDuration,
         bool isSessionLocked,
         bool isSystemSuspended,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        TimeSpan? mouseIdleDuration = null,
+        bool mouseMovedOnDesktop = false)
     {
         _lastSampledIdleDuration = idleDuration;
-        ApplyObservationInternal(observation, idleDuration, isSessionLocked, isSystemSuspended, nowUtc);
+        ApplyObservationInternal(
+            observation,
+            idleDuration,
+            isSessionLocked,
+            isSystemSuspended,
+            nowUtc,
+            mouseIdleDuration,
+            mouseMovedOnDesktop);
     }
 
     private void ApplyObservationInternal(
@@ -166,7 +228,9 @@ public sealed class AwarenessCoordinator : IDisposable
         TimeSpan idleDuration,
         bool isSessionLocked,
         bool isSystemSuspended,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        TimeSpan? mouseIdleDuration = null,
+        bool mouseMovedOnDesktop = false)
     {
         var prevSnapshot = CurrentSnapshot;
         var prevPolicy = CurrentPolicy;
@@ -178,7 +242,9 @@ public sealed class AwarenessCoordinator : IDisposable
             isSystemSuspended,
             Settings,
             _behaviourScheduler.Settings.GlobalBehavioursPaused,
-            nowUtc);
+            nowUtc,
+            mouseIdleDuration,
+            mouseMovedOnDesktop);
 
         CurrentSnapshot = snapshot;
         CurrentPolicy = policy;

@@ -1,3 +1,4 @@
+using System.IO;
 using Bloop.Windows.System;
 using Xunit;
 
@@ -92,6 +93,57 @@ public sealed class NativeDisplayTests
                 var excludedObs = provider.ObserveForegroundWindow(owned);
                 Assert.True(excludedObs.IsBloopOwnedWindow);
                 Assert.False(excludedObs.IsValidExternalWindow);
+            }
+        }
+    }
+
+    [Fact]
+    public void M7_1_WindowsLauncherCatalogService_DiscoversStartMenuShortcuts_SkipsUninstallers_AndValidatesMissingTargets()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"bloop_m71_launcher_{Guid.NewGuid():N}");
+        var dbPath = Path.Combine(tempRoot, "launcher_test.db");
+        var startMenuDir = Path.Combine(tempRoot, "Programs", "Productivity");
+        Directory.CreateDirectory(startMenuDir);
+
+        try
+        {
+            var validShortcut = Path.Combine(startMenuDir, "Bloop Notes Studio.lnk");
+            var uninstallShortcut = Path.Combine(startMenuDir, "Uninstall Bloop Notes.lnk");
+            File.WriteAllText(validShortcut, "dummy shortcut");
+            File.WriteAllText(uninstallShortcut, "dummy uninstaller");
+
+            using var db = new Bloop.Storage.DatabaseService(dbPath);
+            var settingsRepo = new Bloop.Storage.SettingsRepository(db);
+            var service = new Bloop.Windows.Productivity.WindowsLauncherCatalogService(
+                settingsRepo,
+                [Path.Combine(tempRoot, "Programs")]);
+
+            var catalog = service.GetCatalogSnapshot(forceRefresh: true);
+            Assert.Single(catalog);
+            Assert.Equal("Bloop Notes Studio", catalog[0].DisplayName);
+            Assert.Equal("Productivity", catalog[0].Category);
+
+            var missingEntry = new Bloop.Core.Productivity.LauncherEntry(
+                "file:missing",
+                "Missing File",
+                Path.Combine(tempRoot, "does_not_exist.txt"),
+                Bloop.Core.Productivity.LauncherEntryKind.File);
+            bool launchedMissing = service.TryLaunchEntry(missingEntry, out var err);
+            Assert.False(launchedMissing);
+            Assert.NotNull(err);
+            Assert.Contains("no longer exists", err);
+
+            Assert.False(service.TryOpenFilePath(Path.Combine(tempRoot, "missing.md"), out _, out var fileErr));
+            Assert.NotNull(fileErr);
+
+            Assert.False(service.TryOpenFolderPath(Path.Combine(tempRoot, "missing_folder"), out _, out var folderErr));
+            Assert.NotNull(folderErr);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                try { Directory.Delete(tempRoot, recursive: true); } catch { }
             }
         }
     }

@@ -18,11 +18,24 @@ public sealed class NotificationReactionScheduler : INotificationReactionSchedul
     private NotificationImportance _highestDeferredImportance = NotificationImportance.Normal;
     private string? _lastDeferredAppDisplayName;
     private string? _lastDeferredTitle;
+    private string? _lastDeferredBody;
+    private byte[]? _lastDeferredLogoPngBytes;
+    private DateTimeOffset? _lastDeferredTimestampUtc;
+    private string? _lastDeferredNotificationId;
 
     public event EventHandler<NotificationReactionDecision>? ReactionDecided;
 
     public int PendingBatchCount => _pendingBatch.Count;
     public int DeferredWhileHiddenCount => _deferredWhileHiddenCount;
+
+    public NotificationImportance GetPendingBatchHighestImportance()
+    {
+        if (_pendingBatch.Count == 0)
+        {
+            return NotificationImportance.Muted;
+        }
+        return _pendingBatch.Max(n => n.Importance);
+    }
 
     public NotificationImportance ClassifyImportance(NotificationItem item, NotificationSettings settings)
     {
@@ -149,6 +162,10 @@ public sealed class NotificationReactionScheduler : INotificationReactionSchedul
             }
             _lastDeferredAppDisplayName = topItem.Source.DisplayName;
             _lastDeferredTitle = topItem.Title;
+            _lastDeferredBody = topItem.Body;
+            _lastDeferredLogoPngBytes = topItem.Source.LogoPngBytes;
+            _lastDeferredTimestampUtc = topItem.CreatedAtUtc;
+            _lastDeferredNotificationId = topItem.Id;
 
             return Decide(new NotificationReactionDecision(
                 false,
@@ -245,7 +262,11 @@ public sealed class NotificationReactionScheduler : INotificationReactionSchedul
             totalUnreadCount,
             null,
             topItem.Source.DisplayName,
-            topItem.Title));
+            topItem.Title,
+            topItem.Body,
+            topItem.Source.LogoPngBytes,
+            topItem.CreatedAtUtc,
+            topItem.Id));
     }
 
     public NotificationReactionDecision? TryConsumeCatchUpReaction(
@@ -262,11 +283,19 @@ public sealed class NotificationReactionScheduler : INotificationReactionSchedul
         var highest = _highestDeferredImportance;
         var appName = _lastDeferredAppDisplayName;
         var title = _lastDeferredTitle;
+        var body = _lastDeferredBody;
+        var logo = _lastDeferredLogoPngBytes;
+        var ts = _lastDeferredTimestampUtc;
+        var notifId = _lastDeferredNotificationId;
 
         _deferredWhileHiddenCount = 0;
         _highestDeferredImportance = NotificationImportance.Normal;
         _lastDeferredAppDisplayName = null;
         _lastDeferredTitle = null;
+        _lastDeferredBody = null;
+        _lastDeferredLogoPngBytes = null;
+        _lastDeferredTimestampUtc = null;
+        _lastDeferredNotificationId = null;
 
         if (!catchUpEnabled || totalUnreadCount <= 0)
         {
@@ -283,7 +312,11 @@ public sealed class NotificationReactionScheduler : INotificationReactionSchedul
             totalUnreadCount,
             null,
             appName,
-            title));
+            title,
+            body,
+            logo,
+            ts,
+            notifId));
     }
 
     private NotificationReactionDecision Decide(NotificationReactionDecision decision)

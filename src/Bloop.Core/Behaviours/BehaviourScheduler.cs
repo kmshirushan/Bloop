@@ -94,15 +94,15 @@ public sealed class BehaviourScheduler
         var prevPolicy = CurrentAwarenessPolicy;
         CurrentAwarenessPolicy = policy ?? AwarenessPolicy.Default;
 
-        // Keep _lastUserActivityUtc synced with OS-wide keyboard + mouse activity (GetLastInputInfo)
-        var osLastInputUtc = nowUtc - snapshot.IdleDuration;
-        if (osLastInputUtc > _lastUserActivityUtc)
+        // Keep _lastUserActivityUtc synced with mouse activity while AWAKE.
+        // While SLEEPING (ShouldEnterSleepMode=true), external desktop mouse or keyboard activity MUST NOT wake Bloop.
+        var mouseLastActiveUtc = nowUtc - snapshot.MouseIdleDuration;
+        if (!CurrentAwarenessPolicy.ShouldEnterSleepMode && mouseLastActiveUtc > _lastUserActivityUtc)
         {
             var prevInactivity = nowUtc - _lastUserActivityUtc;
-            _lastUserActivityUtc = osLastInputUtc;
+            _lastUserActivityUtc = mouseLastActiveUtc;
 
-            // If Bloop was sleeping and the user returned via keyboard or mouse input
-            if (_isSleeping && !CurrentAwarenessPolicy.ShouldEnterSleepMode && snapshot.InactivityState == UserInactivityState.Active)
+            if (_isSleeping && snapshot.InactivityState == UserInactivityState.Active)
             {
                 WakeFromSleep(prevInactivity, CurrentAwarenessPolicy.ShouldShowMascot && !CurrentAwarenessPolicy.IsQuietMode);
             }
@@ -135,7 +135,9 @@ public sealed class BehaviourScheduler
         }
         else if (_isSleeping && !CurrentAwarenessPolicy.ShouldEnterSleepMode && snapshot.InactivityState == UserInactivityState.Active)
         {
-            WakeFromSleep(snapshot.IdleDuration, CurrentAwarenessPolicy.ShouldShowMascot && !CurrentAwarenessPolicy.IsQuietMode);
+            var sleptDuration = nowUtc - _lastUserActivityUtc;
+            _lastUserActivityUtc = nowUtc;
+            WakeFromSleep(sleptDuration, CurrentAwarenessPolicy.ShouldShowMascot && !CurrentAwarenessPolicy.IsQuietMode);
         }
     }
 
@@ -187,8 +189,15 @@ public sealed class BehaviourScheduler
         double cursorDipY,
         double windowWidthDip,
         double windowHeightDip,
-        WorkAreaBounds workArea)
+        WorkAreaBounds workArea,
+        bool isInsideMascot = false)
     {
+        // M6.1: Once sleeping under Intelligent Sleep policy, desktop mouse movement outside Bloop MUST NOT wake him.
+        if (CurrentAwarenessPolicy.ShouldEnterSleepMode && !isInsideMascot)
+        {
+            return;
+        }
+
         var inactivity = nowUtc - _lastUserActivityUtc;
         _lastUserActivityUtc = nowUtc;
 

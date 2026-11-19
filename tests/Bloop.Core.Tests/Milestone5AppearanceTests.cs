@@ -14,7 +14,7 @@ public sealed class Milestone5AppearanceTests
         try
         {
             using var db = new DatabaseService(dbPath);
-            Assert.Equal(3, db.SchemaVersion);
+            Assert.True(db.SchemaVersion >= 3);
 
             var repo = new AppearanceRepository(db);
             var profiles = repo.GetProfiles();

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -5,10 +6,12 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Bloop.Core.Appearance;
 using Bloop.Core.Interfaces;
 using Bloop.Core.Notifications;
 using Bloop.Core.Personality;
+using Bloop.Core.Productivity;
 using Bloop.Desktop.Appearance;
 using Bloop.Desktop.Services;
 using Bloop.Windows.System;
@@ -70,6 +73,9 @@ public partial class NotificationWindow : Window
     private readonly NotificationSyncCoordinator _notificationCoordinator;
     private readonly INotificationRepository _notificationRepository;
     private readonly DiagnosticsLogService _diagnostics;
+    private readonly ILauncherCatalogService? _launcherService;
+    private readonly IProductivityRepository? _productivityRepository;
+    private readonly CountdownTimerEngine? _timerEngine;
     private readonly Action _onDevHopTrigger;
     private readonly Action _onPeekabooTrigger;
     private readonly Action<int> _onUnreadCountChanged;
@@ -81,7 +87,11 @@ public partial class NotificationWindow : Window
     private CharacterAppearance _characterAppearance = AppearanceDefaults.DefaultCharacter;
     private GlassDesignTokens _currentTokens;
     private bool _isDwmBackdropActive = true;
-    private bool _isInboxTabActive = true;
+    private int _activeMainTabIndex; // 0 = Inbox, 1 = Workspace, 2 = Companion
+    private int _activeWorkspaceSubTabIndex; // 0 = Launcher, 1 = Tasks & Timer, 2 = Notes
+    private bool _suppressNoteEditorEvents;
+    private string? _activeNoteId;
+    private readonly DispatcherTimer _noteAutoSaveDebounceTimer;
 
     public bool IsDetached => _placement.IsDetached;
     public PanelAppearance CurrentPanelAppearance => _panelAppearance;
@@ -96,7 +106,10 @@ public partial class NotificationWindow : Window
         DiagnosticsLogService diagnostics,
         Action onDevHopTrigger,
         Action onPeekabooTrigger,
-        Action<int> onUnreadCountChanged)
+        Action<int> onUnreadCountChanged,
+        ILauncherCatalogService? launcherService = null,
+        IProductivityRepository? productivityRepository = null,
+        CountdownTimerEngine? timerEngine = null)
     {
         InitializeComponent();
         _mascotWindow = mascotWindow;
@@ -105,9 +118,22 @@ public partial class NotificationWindow : Window
         _notificationCoordinator = notificationCoordinator;
         _notificationRepository = notificationRepository;
         _diagnostics = diagnostics;
+        _launcherService = launcherService;
+        _productivityRepository = productivityRepository;
+        _timerEngine = timerEngine;
         _onDevHopTrigger = onDevHopTrigger;
         _onPeekabooTrigger = onPeekabooTrigger;
         _onUnreadCountChanged = onUnreadCountChanged;
+
+        _noteAutoSaveDebounceTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(400)
+        };
+        _noteAutoSaveDebounceTimer.Tick += (_, _) =>
+        {
+            _noteAutoSaveDebounceTimer.Stop();
+            FlushActiveNoteAutoSave();
+        };
 
         _placement = _notificationRepository.LoadPanelPlacement();
         _currentTokens = GlassDesignSystem.ComputeTokens(_panelAppearance, _characterAppearance, true);
@@ -115,6 +141,10 @@ public partial class NotificationWindow : Window
         _diagnostics.EntryAdded += OnDiagnosticEntryAdded;
         _notificationCoordinator.Synchronized += OnNotificationsSynchronized;
         _notificationCoordinator.PermissionStatusChanged += OnPermissionStatusChanged;
+        if (_timerEngine is not null)
+        {
+            _timerEngine.StateChanged += OnTimerEngineStateChanged;
+        }
 
         SourceInitialized += OnWindowSourceInitialized;
         Loaded += (_, _) =>
@@ -122,13 +152,19 @@ public partial class NotificationWindow : Window
             ApplyAttachmentModeUi(restoreGeometry: true);
             ApplyAppearance(_panelAppearance, _characterAppearance);
             RefreshInboxView();
+            RefreshWorkspaceViews();
             RefreshDiagnosticsView();
         };
         Closed += (_, _) =>
         {
+            FlushActiveNoteAutoSave();
             _diagnostics.EntryAdded -= OnDiagnosticEntryAdded;
             _notificationCoordinator.Synchronized -= OnNotificationsSynchronized;
             _notificationCoordinator.PermissionStatusChanged -= OnPermissionStatusChanged;
+            if (_timerEngine is not null)
+            {
+                _timerEngine.StateChanged -= OnTimerEngineStateChanged;
+            }
         };
     }
 
@@ -368,37 +404,69 @@ public partial class NotificationWindow : Window
         var secondaryStyle = TryFindResource("GlassSecondaryButtonStyle") as Style;
         if (primaryStyle is null || secondaryStyle is null) return;
 
-        if (_isInboxTabActive)
-        {
-            InboxTabButton.Style = primaryStyle;
-            CompanionTabButton.Style = secondaryStyle;
-        }
-        else
-        {
-            CompanionTabButton.Style = primaryStyle;
-            InboxTabButton.Style = secondaryStyle;
-        }
+        InboxTabButton.Style = _activeMainTabIndex == 0 ? primaryStyle : secondaryStyle;
+        WorkspaceTabButton.Style = _activeMainTabIndex == 1 ? primaryStyle : secondaryStyle;
+        CompanionTabButton.Style = _activeMainTabIndex == 2 ? primaryStyle : secondaryStyle;
+
+        SubLauncherButton.Style = _activeWorkspaceSubTabIndex == 0 ? primaryStyle : secondaryStyle;
+        SubTasksButton.Style = _activeWorkspaceSubTabIndex == 1 ? primaryStyle : secondaryStyle;
+        SubNotesButton.Style = _activeWorkspaceSubTabIndex == 2 ? primaryStyle : secondaryStyle;
     }
 
     private void OnShowInboxTabClick(object sender, RoutedEventArgs e)
     {
-        _isInboxTabActive = true;
+        FlushActiveNoteAutoSave();
+        _activeMainTabIndex = 0;
         InboxViewGrid.Visibility = Visibility.Visible;
+        WorkspaceViewGrid.Visibility = Visibility.Collapsed;
         CompanionViewPanel.Visibility = Visibility.Collapsed;
         UpdateTabButtonStyles();
         RefreshInboxView();
     }
 
+    private void OnShowWorkspaceTabClick(object sender, RoutedEventArgs e) =>
+        ShowWorkspaceSubTab(_activeWorkspaceSubTabIndex);
+
     private void OnShowCompanionTabClick(object sender, RoutedEventArgs e) => ShowCompanionTab();
 
     public void ShowCompanionTab()
     {
-        _isInboxTabActive = false;
+        FlushActiveNoteAutoSave();
+        _activeMainTabIndex = 2;
         InboxViewGrid.Visibility = Visibility.Collapsed;
+        WorkspaceViewGrid.Visibility = Visibility.Collapsed;
         CompanionViewPanel.Visibility = Visibility.Visible;
         UpdateTabButtonStyles();
         RefreshDiagnosticsView();
     }
+
+    public void ShowWorkspaceSubTab(int subTabIndex)
+    {
+        FlushActiveNoteAutoSave();
+        _activeMainTabIndex = 1;
+        _activeWorkspaceSubTabIndex = Math.Clamp(subTabIndex, 0, 2);
+
+        InboxViewGrid.Visibility = Visibility.Collapsed;
+        WorkspaceViewGrid.Visibility = Visibility.Visible;
+        CompanionViewPanel.Visibility = Visibility.Collapsed;
+
+        LauncherSubView.Visibility = _activeWorkspaceSubTabIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+        TasksSubView.Visibility = _activeWorkspaceSubTabIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        NotesSubView.Visibility = _activeWorkspaceSubTabIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+
+        UpdateTabButtonStyles();
+        RefreshWorkspaceViews();
+
+        if (_activeWorkspaceSubTabIndex == 0)
+        {
+            _diagnostics.RecordCustom("LauncherOpened", "Opened Quick Launcher in Companion Panel");
+            LauncherSearchTextBox.Focus();
+        }
+    }
+
+    private void OnShowLauncherSubTabClick(object sender, RoutedEventArgs e) => ShowWorkspaceSubTab(0);
+    private void OnShowTasksSubTabClick(object sender, RoutedEventArgs e) => ShowWorkspaceSubTab(1);
+    private void OnShowNotesSubTabClick(object sender, RoutedEventArgs e) => ShowWorkspaceSubTab(2);
 
     private void OnNotificationsSynchronized(object? sender, NotificationSyncResult e)
     {
@@ -699,5 +767,569 @@ public partial class NotificationWindow : Window
         });
     }
 
-    private void OnCloseClick(object sender, RoutedEventArgs e) => Hide();
+    public void RefreshWorkspaceViews()
+    {
+        RefreshLauncherResults(forceRefreshCatalog: false);
+        RefreshTasksAndTimerUi();
+        RefreshNotesListAndEditor(keepActiveSelection: true);
+    }
+
+    // =========================================================================
+    // M7.1: Quick Launcher Handlers
+    // =========================================================================
+
+    private void RefreshLauncherResults(bool forceRefreshCatalog)
+    {
+        if (_launcherService is null || LauncherResultsListBox is null) return;
+
+        if (forceRefreshCatalog)
+        {
+            _ = _launcherService.GetCatalogSnapshot(forceRefresh: true);
+        }
+
+        string query = LauncherSearchTextBox?.Text?.Trim() ?? string.Empty;
+        var results = _launcherService.Search(query, maxResults: 30);
+
+        if (results.Count == 0)
+        {
+            LauncherEmptyState.Visibility = Visibility.Visible;
+            LauncherResultsListBox.Visibility = Visibility.Collapsed;
+            LauncherResultsListBox.ItemsSource = null;
+            LauncherEmptyText.Text = string.IsNullOrEmpty(query)
+                ? "No Start Menu applications or recent items found."
+                : $"No matching results for '{query}'.";
+            return;
+        }
+
+        LauncherEmptyState.Visibility = Visibility.Collapsed;
+        LauncherResultsListBox.Visibility = Visibility.Visible;
+        LauncherResultsListBox.ItemsSource = results;
+        LauncherResultsListBox.SelectedIndex = 0;
+    }
+
+    private void OnLauncherSearchTextChanged(object sender, TextChangedEventArgs e)
+    {
+        RefreshLauncherResults(forceRefreshCatalog: false);
+    }
+
+    private void OnLauncherSearchPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            if (!string.IsNullOrEmpty(LauncherSearchTextBox.Text))
+            {
+                LauncherSearchTextBox.Clear();
+            }
+            else
+            {
+                _diagnostics.RecordCustom("LauncherClosed", "Closed Quick Launcher via Escape");
+                Hide();
+            }
+            return;
+        }
+
+        if (e.Key == Key.Down && LauncherResultsListBox.Items.Count > 0)
+        {
+            e.Handled = true;
+            int next = Math.Min(LauncherResultsListBox.Items.Count - 1, Math.Max(0, LauncherResultsListBox.SelectedIndex + 1));
+            LauncherResultsListBox.SelectedIndex = next;
+            LauncherResultsListBox.ScrollIntoView(LauncherResultsListBox.SelectedItem);
+        }
+        else if (e.Key == Key.Up && LauncherResultsListBox.Items.Count > 0)
+        {
+            e.Handled = true;
+            int prev = Math.Max(0, LauncherResultsListBox.SelectedIndex - 1);
+            LauncherResultsListBox.SelectedIndex = prev;
+            LauncherResultsListBox.ScrollIntoView(LauncherResultsListBox.SelectedItem);
+        }
+        else if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            LaunchSelectedLauncherEntry();
+        }
+    }
+
+    private void OnLauncherListPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            LaunchSelectedLauncherEntry();
+        }
+        else if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            _diagnostics.RecordCustom("LauncherClosed", "Closed Quick Launcher via Escape");
+            Hide();
+        }
+    }
+
+    private void OnLauncherResultDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        LaunchSelectedLauncherEntry();
+    }
+
+    private void OnLaunchItemButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { Tag: LauncherEntry entry })
+        {
+            ExecuteLaunchEntry(entry);
+        }
+    }
+
+    private void LaunchSelectedLauncherEntry()
+    {
+        if (LauncherResultsListBox.SelectedItem is LauncherEntry entry)
+        {
+            ExecuteLaunchEntry(entry);
+        }
+    }
+
+    private void ExecuteLaunchEntry(LauncherEntry entry)
+    {
+        if (_launcherService is null) return;
+
+        if (_launcherService.TryLaunchEntry(entry, out var err))
+        {
+            LauncherStatusText.Text = $"Launched: {entry.DisplayName}";
+            _personality.TryTransition(MascotState.Happy, force: true);
+            RefreshLauncherResults(forceRefreshCatalog: false);
+        }
+        else
+        {
+            LauncherStatusText.Text = err ?? "Failed to launch target.";
+        }
+    }
+
+    private void OnLauncherOpenFileClick(object sender, RoutedEventArgs e)
+    {
+        if (_launcherService is null) return;
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Bloop Quick Launcher — Open File",
+            CheckFileExists = true
+        };
+        if (dlg.ShowDialog(this) == true)
+        {
+            if (_launcherService.TryOpenFilePath(dlg.FileName, out var added, out var err))
+            {
+                LauncherStatusText.Text = $"Opened file: {added?.DisplayName}";
+                RefreshLauncherResults(forceRefreshCatalog: false);
+            }
+            else
+            {
+                LauncherStatusText.Text = err ?? "Could not open file.";
+            }
+        }
+    }
+
+    private void OnLauncherOpenFolderClick(object sender, RoutedEventArgs e)
+    {
+        if (_launcherService is null) return;
+
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Bloop Quick Launcher — Open Folder"
+        };
+        if (dlg.ShowDialog(this) == true)
+        {
+            if (_launcherService.TryOpenFolderPath(dlg.FolderName, out var added, out var err))
+            {
+                LauncherStatusText.Text = $"Opened folder: {added?.DisplayName}";
+                RefreshLauncherResults(forceRefreshCatalog: false);
+            }
+            else
+            {
+                LauncherStatusText.Text = err ?? "Could not open folder.";
+            }
+        }
+    }
+
+    private void OnLauncherRefreshClick(object sender, RoutedEventArgs e)
+    {
+        RefreshLauncherResults(forceRefreshCatalog: true);
+        LauncherStatusText.Text = "Application catalog refreshed.";
+    }
+
+    // =========================================================================
+    // M7.2: Tasks, Countdown Timer & Reminders Handlers
+    // =========================================================================
+
+    private void OnTimerEngineStateChanged(object? sender, CountdownTimerSnapshot snap)
+    {
+        Dispatcher.InvokeAsync(UpdateTimerDisplayOnly);
+    }
+
+    public void UpdateTimerDisplayOnly()
+    {
+        if (_timerEngine is null || TimerDisplayClockText is null) return;
+
+        var snap = _timerEngine.Current;
+        TimerDisplayClockText.Text = CountdownTimerEngine.FormatDisplayClock(snap.RemainingDuration);
+
+        TimerStateBadgeText.Text = snap.State.ToString();
+        TimerPauseResumeButton.Content = snap.State == CountdownTimerState.Paused ? "Resume" : "Pause";
+    }
+
+    public void RefreshTasksAndTimerUi()
+    {
+        UpdateTimerDisplayOnly();
+
+        if (_productivityRepository is null || TasksItemsControl is null) return;
+
+        var filter = TaskFilterComboBox?.SelectedIndex switch
+        {
+            1 => TaskListFilter.Active,
+            2 => TaskListFilter.Completed,
+            _ => TaskListFilter.All
+        };
+
+        var tasks = _productivityRepository.GetTasks(filter);
+        TasksItemsControl.ItemsSource = tasks;
+        TasksEmptyText.Visibility = tasks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        int pendingRems = _productivityRepository.GetReminders(includeDelivered: false).Count;
+        if (PendingRemindersBadgeText is not null)
+        {
+            PendingRemindersBadgeText.Text = $"{pendingRems} reminder{(pendingRems == 1 ? "" : "s")}";
+        }
+    }
+
+    private TimeSpan ParseRequestedTimerDuration()
+    {
+        var raw = TimerMinutesTextBox?.Text?.Trim() ?? "25";
+        if (raw.EndsWith("s", StringComparison.OrdinalIgnoreCase) &&
+            double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+        {
+            return TimeSpan.FromSeconds(Math.Clamp(seconds, 1.0, 24 * 3600.0));
+        }
+
+        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes))
+        {
+            return TimeSpan.FromMinutes(Math.Clamp(minutes, 0.05, 24 * 60.0));
+        }
+
+        return TimeSpan.FromMinutes(25);
+    }
+
+    private void OnTimerStartClick(object sender, RoutedEventArgs e)
+    {
+        if (_timerEngine is null || _productivityRepository is null) return;
+
+        var dur = ParseRequestedTimerDuration();
+        var label = TimerLabelTextBox?.Text?.Trim();
+        var snap = _timerEngine.Start(dur, label, DateTimeOffset.UtcNow);
+        _productivityRepository.SaveTimerSnapshot(snap);
+        UpdateTimerDisplayOnly();
+    }
+
+    private void OnTimerPauseResumeClick(object sender, RoutedEventArgs e)
+    {
+        if (_timerEngine is null || _productivityRepository is null) return;
+
+        var now = DateTimeOffset.UtcNow;
+        var snap = _timerEngine.Current.State == CountdownTimerState.Paused
+            ? _timerEngine.Resume(now)
+            : _timerEngine.Pause(now);
+        _productivityRepository.SaveTimerSnapshot(snap);
+        UpdateTimerDisplayOnly();
+    }
+
+    private void OnTimerResetClick(object sender, RoutedEventArgs e)
+    {
+        if (_timerEngine is null || _productivityRepository is null) return;
+
+        var snap = _timerEngine.Reset(DateTimeOffset.UtcNow);
+        _productivityRepository.SaveTimerSnapshot(snap);
+        UpdateTimerDisplayOnly();
+    }
+
+    private void OnTimerCancelClick(object sender, RoutedEventArgs e)
+    {
+        if (_timerEngine is null || _productivityRepository is null) return;
+
+        var snap = _timerEngine.Cancel(DateTimeOffset.UtcNow);
+        _productivityRepository.SaveTimerSnapshot(snap);
+        UpdateTimerDisplayOnly();
+    }
+
+    private void OnTaskFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        RefreshTasksAndTimerUi();
+    }
+
+    private void OnNewTaskTitleKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            CreateNewTaskFromUi();
+        }
+    }
+
+    private void OnAddTaskClick(object sender, RoutedEventArgs e) => CreateNewTaskFromUi();
+
+    private void CreateNewTaskFromUi()
+    {
+        if (_productivityRepository is null) return;
+
+        var title = NewTaskTitleTextBox?.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(title)) return;
+
+        var prio = NewTaskPriorityComboBox?.SelectedIndex switch
+        {
+            0 => TaskPriority.Low,
+            2 => TaskPriority.High,
+            _ => TaskPriority.Normal
+        };
+
+        var now = DateTimeOffset.UtcNow;
+        var saved = _productivityRepository.SaveTask(new TodoTaskItem(
+            Id: string.Empty,
+            Title: title,
+            Priority: prio,
+            CreatedAtUtc: now,
+            UpdatedAtUtc: now));
+
+        _diagnostics.RecordCustom("TaskCreated", $"Created task '{saved.Title}' (Priority={saved.Priority})");
+        NewTaskTitleTextBox!.Clear();
+        RefreshTasksAndTimerUi();
+    }
+
+    private void OnAddQuickReminderClick(object sender, RoutedEventArgs e)
+    {
+        if (_productivityRepository is null) return;
+
+        var title = NewTaskTitleTextBox?.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = "Quick Desktop Reminder";
+        }
+        else
+        {
+            NewTaskTitleTextBox!.Clear();
+        }
+
+        var prio = NewTaskPriorityComboBox?.SelectedIndex switch
+        {
+            0 => TaskPriority.Low,
+            2 => TaskPriority.High,
+            _ => TaskPriority.Normal
+        };
+
+        var now = DateTimeOffset.UtcNow;
+        var rem = _productivityRepository.SaveReminder(new ReminderItem(
+            Id: string.Empty,
+            Title: title,
+            TriggerAtUtc: now.AddMinutes(10),
+            Priority: prio,
+            CreatedAtUtc: now));
+
+        _diagnostics.RecordCustom("ReminderScheduled", $"Scheduled reminder '{rem.Title}' for {rem.TriggerAtUtc.ToLocalTime():HH:mm:ss}");
+        RefreshTasksAndTimerUi();
+    }
+
+    private void OnToggleTaskCompletedClick(object sender, RoutedEventArgs e)
+    {
+        if (_productivityRepository is null) return;
+        if (sender is System.Windows.Controls.CheckBox { Tag: string id } && !string.IsNullOrWhiteSpace(id))
+        {
+            var existing = _productivityRepository.GetTaskById(id);
+            if (existing is not null)
+            {
+                bool nextCompleted = !existing.IsCompleted;
+                var updated = _productivityRepository.SetTaskCompleted(id, nextCompleted, DateTimeOffset.UtcNow);
+                _diagnostics.RecordCustom(
+                    nextCompleted ? "TaskCompleted" : "TaskUpdated",
+                    $"{(nextCompleted ? "Completed" : "Reopened")} task '{updated.Title}'");
+                RefreshTasksAndTimerUi();
+            }
+        }
+    }
+
+    private void OnDeleteTaskClick(object sender, RoutedEventArgs e)
+    {
+        if (_productivityRepository is null) return;
+        if (sender is System.Windows.Controls.Button { Tag: string id } && !string.IsNullOrWhiteSpace(id))
+        {
+            if (_productivityRepository.DeleteTask(id))
+            {
+                _diagnostics.RecordCustom("TaskDeleted", $"Deleted task '{id}'");
+                RefreshTasksAndTimerUi();
+            }
+        }
+    }
+
+    // =========================================================================
+    // M7.3: Quick Notes Handlers (with Debounced Auto-Save + Close Flush)
+    // =========================================================================
+
+    private void RefreshNotesListAndEditor(bool keepActiveSelection)
+    {
+        if (_productivityRepository is null || NotesListBox is null) return;
+
+        string query = NotesSearchTextBox?.Text?.Trim() ?? string.Empty;
+        var notes = _productivityRepository.GetNotes(query);
+
+        _suppressNoteEditorEvents = true;
+        try
+        {
+            NotesListBox.ItemsSource = notes;
+
+            QuickNoteItem? selected = null;
+            if (keepActiveSelection && !string.IsNullOrWhiteSpace(_activeNoteId))
+            {
+                selected = notes.FirstOrDefault(n => n.Id == _activeNoteId);
+            }
+            selected ??= notes.FirstOrDefault();
+
+            if (selected is not null)
+            {
+                _activeNoteId = selected.Id;
+                NotesListBox.SelectedItem = selected;
+                NoteTitleEditorTextBox.Text = selected.Title;
+                NoteContentEditorTextBox.Text = selected.Content;
+                NoteAutoSaveStatusText.Text = $"Saved • Last modified {selected.UpdatedAtUtc.ToLocalTime():HH:mm:ss}";
+            }
+            else
+            {
+                _activeNoteId = null;
+                NoteTitleEditorTextBox.Text = string.Empty;
+                NoteContentEditorTextBox.Text = string.Empty;
+                NoteAutoSaveStatusText.Text = "Type below or click '+ New' to create a note";
+            }
+        }
+        finally
+        {
+            _suppressNoteEditorEvents = false;
+        }
+    }
+
+    private void OnNotesSearchTextChanged(object sender, TextChangedEventArgs e)
+    {
+        FlushActiveNoteAutoSave();
+        string query = NotesSearchTextBox?.Text?.Trim() ?? string.Empty;
+        _diagnostics.RecordCustom("NoteSearchExecuted", $"Note search query='{query}'");
+        RefreshNotesListAndEditor(keepActiveSelection: true);
+    }
+
+    private void OnSelectedNoteChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressNoteEditorEvents) return;
+
+        FlushActiveNoteAutoSave();
+        if (NotesListBox.SelectedItem is QuickNoteItem note)
+        {
+            _suppressNoteEditorEvents = true;
+            try
+            {
+                _activeNoteId = note.Id;
+                NoteTitleEditorTextBox.Text = note.Title;
+                NoteContentEditorTextBox.Text = note.Content;
+                NoteAutoSaveStatusText.Text = $"Loaded • Last modified {note.UpdatedAtUtc.ToLocalTime():HH:mm:ss}";
+            }
+            finally
+            {
+                _suppressNoteEditorEvents = false;
+            }
+        }
+    }
+
+    private void OnNewNoteClick(object sender, RoutedEventArgs e)
+    {
+        if (_productivityRepository is null) return;
+
+        FlushActiveNoteAutoSave();
+        var now = DateTimeOffset.UtcNow;
+        var created = _productivityRepository.SaveNote(new QuickNoteItem(
+            Id: string.Empty,
+            Title: "New Quick Note",
+            Content: string.Empty,
+            CreatedAtUtc: now,
+            UpdatedAtUtc: now));
+
+        _activeNoteId = created.Id;
+        _diagnostics.RecordCustom("NoteCreated", $"Created quick note '{created.Id}'");
+        RefreshNotesListAndEditor(keepActiveSelection: true);
+        NoteContentEditorTextBox.Focus();
+    }
+
+    private void OnDeleteNoteClick(object sender, RoutedEventArgs e)
+    {
+        if (_productivityRepository is null || string.IsNullOrWhiteSpace(_activeNoteId)) return;
+
+        _noteAutoSaveDebounceTimer.Stop();
+        string idToDelete = _activeNoteId;
+        _activeNoteId = null;
+
+        if (_productivityRepository.DeleteNote(idToDelete))
+        {
+            _diagnostics.RecordCustom("NoteDeleted", $"Deleted quick note '{idToDelete}'");
+            RefreshNotesListAndEditor(keepActiveSelection: false);
+        }
+    }
+
+    private void OnNoteEditorTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressNoteEditorEvents || _productivityRepository is null) return;
+
+        NoteAutoSaveStatusText.Text = "Auto-saving...";
+        _noteAutoSaveDebounceTimer.Stop();
+        _noteAutoSaveDebounceTimer.Start();
+    }
+
+    public void FlushActiveNoteAutoSave()
+    {
+        _noteAutoSaveDebounceTimer.Stop();
+        if (_suppressNoteEditorEvents || _productivityRepository is null) return;
+
+        string title = NoteTitleEditorTextBox?.Text ?? string.Empty;
+        string content = NoteContentEditorTextBox?.Text ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(_activeNoteId) &&
+            string.IsNullOrWhiteSpace(title) &&
+            string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var existing = !string.IsNullOrWhiteSpace(_activeNoteId)
+            ? _productivityRepository.GetNoteById(_activeNoteId)
+            : null;
+
+        if (existing is not null &&
+            string.Equals(existing.Title, title.Trim(), StringComparison.Ordinal) &&
+            string.Equals(existing.Content, content, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var saved = _productivityRepository.SaveNote(new QuickNoteItem(
+            Id: _activeNoteId ?? string.Empty,
+            Title: title,
+            Content: content,
+            CreatedAtUtc: existing?.CreatedAtUtc ?? now,
+            UpdatedAtUtc: now));
+
+        bool wasNew = string.IsNullOrWhiteSpace(_activeNoteId);
+        _activeNoteId = saved.Id;
+        _diagnostics.RecordCustom(
+            wasNew ? "NoteCreated" : "NoteAutoSaved",
+            $"{(wasNew ? "Created" : "Auto-saved")} note '{saved.Title}' ({saved.Content.Length} chars)");
+
+        if (NoteAutoSaveStatusText is not null)
+        {
+            NoteAutoSaveStatusText.Text = $"Auto-saved at {saved.UpdatedAtUtc.ToLocalTime():HH:mm:ss}";
+        }
+    }
+
+    private void OnCloseClick(object sender, RoutedEventArgs e)
+    {
+        FlushActiveNoteAutoSave();
+        Hide();
+    }
 }

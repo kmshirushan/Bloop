@@ -1,8 +1,10 @@
 using System.Globalization;
+using System.Text.Json;
 using Bloop.Core.Awareness;
 using Bloop.Core.Behaviours;
 using Bloop.Core.Interfaces;
 using Bloop.Core.Movement;
+using Bloop.Core.Productivity;
 
 namespace Bloop.Storage;
 
@@ -171,6 +173,8 @@ public sealed class SettingsRepository : ISettingsRepository
             InactivityDetectionEnabled = ParseBool(GetSetting("awareness.inactivity_detection_enabled"), d.InactivityDetectionEnabled),
             AutoQuietModeEnabled = ParseBool(GetSetting("awareness.auto_quiet_enabled"), d.AutoQuietModeEnabled),
             AutoSleepEnabled = ParseBool(GetSetting("awareness.auto_sleep_enabled"), d.AutoSleepEnabled),
+            SleepAfterSeconds = ParseDouble(GetSetting("awareness.sleep_after_seconds"), d.SleepAfterSeconds, 5.0, 3600.0),
+            PriorityNotificationWakeEnabled = ParseBool(GetSetting("awareness.priority_notification_wake_enabled"), d.PriorityNotificationWakeEnabled),
             WelcomeBackReactionEnabled = ParseBool(GetSetting("awareness.welcome_back_enabled"), d.WelcomeBackReactionEnabled),
             QuietThresholdSeconds = ParseDouble(GetSetting("awareness.quiet_threshold_seconds"), d.QuietThresholdSeconds, 10.0, 1800.0),
             AwayThresholdSeconds = ParseDouble(GetSetting("awareness.away_threshold_seconds"), d.AwayThresholdSeconds, 25.0, 3600.0),
@@ -203,6 +207,8 @@ public sealed class SettingsRepository : ISettingsRepository
         SetSetting("awareness.inactivity_detection_enabled", norm.InactivityDetectionEnabled.ToString(CultureInfo.InvariantCulture));
         SetSetting("awareness.auto_quiet_enabled", norm.AutoQuietModeEnabled.ToString(CultureInfo.InvariantCulture));
         SetSetting("awareness.auto_sleep_enabled", norm.AutoSleepEnabled.ToString(CultureInfo.InvariantCulture));
+        SetSetting("awareness.sleep_after_seconds", norm.SleepAfterSeconds.ToString(CultureInfo.InvariantCulture));
+        SetSetting("awareness.priority_notification_wake_enabled", norm.PriorityNotificationWakeEnabled.ToString(CultureInfo.InvariantCulture));
         SetSetting("awareness.welcome_back_enabled", norm.WelcomeBackReactionEnabled.ToString(CultureInfo.InvariantCulture));
         SetSetting("awareness.quiet_threshold_seconds", norm.QuietThresholdSeconds.ToString(CultureInfo.InvariantCulture));
         SetSetting("awareness.away_threshold_seconds", norm.AwayThresholdSeconds.ToString(CultureInfo.InvariantCulture));
@@ -216,6 +222,33 @@ public sealed class SettingsRepository : ISettingsRepository
         SetSetting("awareness.power_awareness_enabled", norm.PowerAwarenessEnabled.ToString(CultureInfo.InvariantCulture));
         SetSetting("awareness.fullscreen_excluded_csv", norm.FullScreenExcludedProcessesCsv);
         SetSetting("awareness.app_rules_csv", AwarenessValidator.FormatAppRules(norm.AppRules));
+    }
+
+    public IReadOnlyList<LauncherEntry> LoadRecentLauncherEntries()
+    {
+        var json = GetSetting("launcher.recent_entries_json");
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<LauncherEntry>>(json) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    public void SaveRecentLauncherEntries(IReadOnlyList<LauncherEntry> entries)
+    {
+        var trimmed = (entries ?? [])
+            .Take(25)
+            .ToList();
+        var json = JsonSerializer.Serialize(trimmed);
+        SetSetting("launcher.recent_entries_json", json);
     }
 
     private static bool ParseBool(string? raw, bool fallback) =>

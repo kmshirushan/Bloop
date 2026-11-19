@@ -4,12 +4,14 @@ using Bloop.Core.Behaviours;
 using Bloop.Core.Movement;
 using Bloop.Core.Notifications;
 using Bloop.Core.Personality;
+using Bloop.Core.Productivity;
 using Bloop.Desktop.Awareness;
 using Bloop.Desktop.Services;
 using Bloop.Desktop.Windows;
 using Bloop.Storage;
 using Bloop.Windows.Awareness;
 using Bloop.Windows.Notifications;
+using Bloop.Windows.Productivity;
 
 namespace Bloop.Desktop;
 
@@ -33,11 +35,13 @@ public partial class App : System.Windows.Application
         bool verifyM5Runtime = e.Args.Any(a => string.Equals(a, "--verify-m5-runtime", StringComparison.OrdinalIgnoreCase));
         bool verifyM51Runtime = e.Args.Any(a => string.Equals(a, "--verify-m5-1-runtime", StringComparison.OrdinalIgnoreCase));
         bool verifyM6Runtime = e.Args.Any(a => string.Equals(a, "--verify-m6-runtime", StringComparison.OrdinalIgnoreCase));
+        bool verifyM61M7Runtime = e.Args.Any(a => string.Equals(a, "--verify-m61-m7-runtime", StringComparison.OrdinalIgnoreCase));
+        bool verifyM74Runtime = e.Args.Any(a => string.Equals(a, "--verify-m7-4-runtime", StringComparison.OrdinalIgnoreCase));
         string? m5ScreenshotDir = e.Args
             .FirstOrDefault(a => a.StartsWith("--m5-screenshots-dir=", StringComparison.OrdinalIgnoreCase))
             ?.Split('=', 2)[1];
 
-        if (verifyM51Runtime || verifyM6Runtime)
+        if (verifyM51Runtime || verifyM6Runtime || verifyM61M7Runtime || verifyM74Runtime)
         {
             _tempVerifyDbPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"bloop_verify_{Guid.NewGuid():N}.db");
         }
@@ -46,7 +50,15 @@ public partial class App : System.Windows.Application
         var settingsRepo = new SettingsRepository(_databaseService);
         var notificationRepo = new NotificationRepository(_databaseService);
         var appearanceRepo = new AppearanceRepository(_databaseService);
+        var productivityRepo = new ProductivityRepository(_databaseService);
+        var launcherService = new WindowsLauncherCatalogService(settingsRepo);
+        var timerEngine = new CountdownTimerEngine(productivityRepo.LoadTimerSnapshot(), DateTimeOffset.UtcNow);
+        var reminderScheduler = new ReminderScheduler(productivityRepo);
         var diagnostics = new DiagnosticsLogService();
+
+        launcherService.DiagnosticLogged += (_, d) => diagnostics.RecordCustom(d.EventName, d.Summary);
+        timerEngine.DiagnosticLogged += (_, d) => diagnostics.RecordCustom(d.EventName, d.Summary);
+        reminderScheduler.DiagnosticLogged += (_, d) => diagnostics.RecordCustom(d.EventName, d.Summary);
 
         var personalityEngine = new PersonalityEngine();
         var movementController = new MovementController();
@@ -114,7 +126,11 @@ public partial class App : System.Windows.Application
             notificationReactionScheduler,
             appearanceRepo,
             _awarenessCoordinator,
-            diagnostics
+            diagnostics,
+            launcherService,
+            productivityRepo,
+            timerEngine,
+            reminderScheduler
         );
         _mascotWindow.Show();
 
@@ -141,6 +157,14 @@ public partial class App : System.Windows.Application
         else if (verifyM6Runtime)
         {
             _ = _mascotWindow.RunMilestone6VerificationSequenceAsync(m5ScreenshotDir);
+        }
+        else if (verifyM61M7Runtime)
+        {
+            _ = _mascotWindow.RunMilestone6_1And7VerificationSequenceAsync(m5ScreenshotDir);
+        }
+        else if (verifyM74Runtime)
+        {
+            _ = _mascotWindow.RunMilestone7_4VerificationSequenceAsync(m5ScreenshotDir);
         }
     }
 

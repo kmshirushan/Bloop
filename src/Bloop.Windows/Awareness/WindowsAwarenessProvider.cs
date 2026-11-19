@@ -51,6 +51,11 @@ public sealed class WindowsAwarenessProvider : IAwarenessProvider
     private bool _isSystemSuspended;
     private bool _disposed;
 
+    // Mouse-only activity state (independent of keyboard input)
+    private int _lastMouseX = int.MinValue;
+    private int _lastMouseY = int.MinValue;
+    private DateTimeOffset _lastMouseMoveUtc = DateTimeOffset.UtcNow;
+
     public bool IsSessionLocked => _isSessionLocked;
     public bool IsSystemSuspended => _isSystemSuspended;
 
@@ -212,6 +217,35 @@ public sealed class WindowsAwarenessProvider : IAwarenessProvider
         uint currentTick = unchecked((uint)Environment.TickCount);
         uint elapsedMs = unchecked(currentTick - lii.dwTime);
         return TimeSpan.FromMilliseconds(elapsedMs);
+    }
+
+    public (bool MovedSinceLastSample, int ScreenX, int ScreenY, TimeSpan MouseIdleDuration) SampleMouseActivity(DateTimeOffset nowUtc)
+    {
+        if (!NativeMethods.GetCursorPos(out var pt))
+        {
+            var elapsedFallback = nowUtc - _lastMouseMoveUtc;
+            return (false, _lastMouseX, _lastMouseY, elapsedFallback > TimeSpan.Zero ? elapsedFallback : TimeSpan.Zero);
+        }
+
+        if (_lastMouseX == int.MinValue && _lastMouseY == int.MinValue)
+        {
+            _lastMouseX = pt.X;
+            _lastMouseY = pt.Y;
+            _lastMouseMoveUtc = nowUtc;
+            return (false, pt.X, pt.Y, TimeSpan.Zero);
+        }
+
+        bool moved = pt.X != _lastMouseX || pt.Y != _lastMouseY;
+        if (moved)
+        {
+            _lastMouseX = pt.X;
+            _lastMouseY = pt.Y;
+            _lastMouseMoveUtc = nowUtc;
+            return (true, pt.X, pt.Y, TimeSpan.Zero);
+        }
+
+        var idle = nowUtc - _lastMouseMoveUtc;
+        return (false, pt.X, pt.Y, idle > TimeSpan.Zero ? idle : TimeSpan.Zero);
     }
 
     private (string? ProcessName, string? AppName, string? ClassName) ResolveWindowIdentityCached(IntPtr hwnd, uint pid)

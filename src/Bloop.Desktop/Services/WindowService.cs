@@ -27,6 +27,7 @@ public sealed class WindowService : IDisposable
 
     public event EventHandler? ResetPositionRequested;
     public event EventHandler? ToggleDemoPanelRequested;
+    public event EventHandler<int>? OpenProductivitySubTabRequested;
     public event EventHandler? OpenSettingsRequested;
     public event EventHandler? DevAutonomousHopRequested;
     public event EventHandler? ToggleFocusModeRequested;
@@ -70,6 +71,12 @@ public sealed class WindowService : IDisposable
         menu.Items.Add(_focusMenuItem);
         menu.Items.Add("Toggle Companion Panel", null, (_, _) =>
             ToggleDemoPanelRequested?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add("Quick Launcher...", null, (_, _) =>
+            OpenProductivitySubTabRequested?.Invoke(this, 0));
+        menu.Items.Add("Tasks, Timer & Reminders...", null, (_, _) =>
+            OpenProductivitySubTabRequested?.Invoke(this, 1));
+        menu.Items.Add("Quick Notes...", null, (_, _) =>
+            OpenProductivitySubTabRequested?.Invoke(this, 2));
         menu.Items.Add("Reset Mascot Position", null, (_, _) =>
             ResetPositionRequested?.Invoke(this, EventArgs.Empty));
         menu.Items.Add("Settings...", null, (_, _) =>

@@ -534,6 +534,21 @@
                                           Checked="OnSettingChanged"
                                           Unchecked="OnSettingChanged" />
 
+                                <CheckBox x:Name="AutoSleepCheckBox"
+                                          Style="{StaticResource GlassCheckBoxStyle}"
+                                          Content="Automatic Sleep (Mouse Inactivity Only; Hover Over Bloop to Wake)"
+                                          FontWeight="SemiBold"
+                                          IsChecked="True"
+                                          Checked="OnSettingChanged"
+                                          Unchecked="OnSettingChanged" />
+
+                                <CheckBox x:Name="PriorityNotificationWakeCheckBox"
+                                          Style="{StaticResource GlassCheckBoxStyle}"
+                                          Content="Priority Notification Wake (Wake for High/Critical Notifications)"
+                                          IsChecked="True"
+                                          Checked="OnSettingChanged"
+                                          Unchecked="OnSettingChanged" />
+
                                 <CheckBox x:Name="SessionPowerAwarenessCheckBox"
                                           Style="{StaticResource GlassCheckBoxStyle}"
                                           Content="Hide &amp; Suspend on Windows Session Lock / System Sleep"
@@ -541,6 +556,20 @@
                                           Checked="OnSettingChanged"
                                           Unchecked="OnSettingChanged"
                                           Margin="0,0,0,8" />
+
+                                <DockPanel Margin="0,0,0,3">
+                                    <TextBlock Text="Sleep After Mouse Inactivity (sec):" Foreground="{DynamicResource GlassSecondaryTextBrush}" FontSize="11.5" />
+                                    <TextBlock x:Name="SleepAfterValueText" Text="30 s" Foreground="{DynamicResource GlassAccentTextBrush}" HorizontalAlignment="Right" DockPanel.Dock="Right" />
+                                </DockPanel>
+                                <Slider x:Name="SleepAfterSlider"
+                                        Style="{StaticResource GlassSliderStyle}"
+                                        Minimum="5"
+                                        Maximum="300"
+                                        Value="30"
+                                        TickFrequency="5"
+                                        IsSnapToTickEnabled="True"
+                                        ValueChanged="OnSliderValueChanged"
+                                        Margin="0,0,0,8" />
 
                                 <DockPanel Margin="0,0,0,3">
                                     <TextBlock Text="Full-Screen Restore Delay:" Foreground="{DynamicResource GlassSecondaryTextBrush}" FontSize="11.5" />

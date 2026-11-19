@@ -3,6 +3,7 @@ using Bloop.Core.Behaviours;
 using Bloop.Core.Events;
 using Bloop.Core.Movement;
 using Bloop.Core.Personality;
+using Bloop.Core.Productivity;
 
 namespace Bloop.Core.Interfaces;
 
@@ -71,5 +72,7 @@ public interface ISettingsRepository
     void SaveBehaviourSettings(BehaviourSettings settings);
     AwarenessSettings LoadAwarenessSettings();
     void SaveAwarenessSettings(AwarenessSettings settings);
+    IReadOnlyList<LauncherEntry> LoadRecentLauncherEntries();
+    void SaveRecentLauncherEntries(IReadOnlyList<LauncherEntry> entries);
 }
 

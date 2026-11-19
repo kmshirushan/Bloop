@@ -393,4 +393,150 @@ public sealed class Milestone6AwarenessTests
             if (File.Exists(dbPath)) File.Delete(dbPath);
         }
     }
+
+    [Fact]
+    public void M6_1_IntelligentSleep_EnforcesMouseOnlyInactivity_HoverOnlyWake_AndPriorityNotificationWake()
+    {
+        var resolver = new ContextPolicyResolver();
+        var settings = AwarenessSettings.Default with
+        {
+            AutoSleepEnabled = true,
+            SleepAfterSeconds = 30.0,
+            PriorityNotificationWakeEnabled = true
+        };
+        var obs = MakeObservation(processName: "explorer");
+        var t0 = new DateTimeOffset(2026, 11, 18, 8, 0, 0, TimeSpan.Zero);
+
+        // 1. Mouse movement before sleep resets countdown (at t=20s, mouse idle is 5s -> stays Awake)
+        var (s1, p1, _) = resolver.Evaluate(
+            obs,
+            rawIdleDuration: TimeSpan.FromSeconds(5),
+            isSessionLocked: false,
+            isSystemSuspended: false,
+            settings,
+            globalBehavioursPaused: false,
+            t0.AddSeconds(20),
+            mouseIdleDuration: TimeSpan.FromSeconds(5),
+            mouseMovedOnDesktop: true);
+        Assert.False(s1.IsSleeping);
+        Assert.Equal(DesktopContext.Normal, p1.EffectiveContext);
+
+        // 2 & 3. Keyboard activity alone does NOT reset mouse inactivity countdown; Bloop enters sleep after 30s of mouse inactivity
+        // (rawIdleDuration = 1s due to keyboard typing, but mouseIdleDuration = 30.5s >= 30s)
+        var (sSleep, pSleep, eSleep) = resolver.Evaluate(
+            obs,
+            rawIdleDuration: TimeSpan.FromSeconds(1),
+            isSessionLocked: false,
+            isSystemSuspended: false,
+            settings,
+            globalBehavioursPaused: false,
+            t0.AddSeconds(51),
+            mouseIdleDuration: TimeSpan.FromSeconds(30.5),
+            mouseMovedOnDesktop: false);
+        Assert.True(sSleep.IsSleeping);
+        Assert.Equal(DesktopContext.Sleeping, pSleep.EffectiveContext);
+        Assert.True(pSleep.ShouldShowMascot); // Sleeping never hides Bloop (no SW_HIDE)
+        Assert.True(pSleep.ShouldEnterSleepMode);
+        Assert.False(pSleep.AllowAutonomousMovement);
+        Assert.Contains(eSleep, e => e.EventName == "SleepEntered");
+
+        // 4. Moving the mouse elsewhere on the desktop (mouseIdleDuration drops to 0s, mouseMovedOnDesktop=true) does NOT wake Bloop once sleeping
+        var (sStillAsleep, pStillAsleep, _) = resolver.Evaluate(
+            obs,
+            rawIdleDuration: TimeSpan.Zero,
+            isSessionLocked: false,
+            isSystemSuspended: false,
+            settings,
+            globalBehavioursPaused: false,
+            t0.AddSeconds(55),
+            mouseIdleDuration: TimeSpan.Zero,
+            mouseMovedOnDesktop: true);
+        Assert.True(sStillAsleep.IsSleeping);
+        Assert.Equal(DesktopContext.Sleeping, pStillAsleep.EffectiveContext);
+        Assert.True(pStillAsleep.ShouldEnterSleepMode);
+
+        // 5 & 6. Moving the pointer over Bloop wakes him and restarts the sleep countdown after pointer leaves
+        var tWake = t0.AddSeconds(60);
+        bool wokeByPointer = resolver.TryWakeFromPointerEntry(tWake, out var wakeEvt);
+        Assert.True(wokeByPointer);
+        Assert.NotNull(wakeEvt);
+        Assert.Equal("SleepExited", wakeEvt!.EventName);
+
+        // At tWake + 10s, even if global mouseIdleDuration was 25s, sleep countdown restarted at tWake (only 10s elapsed < 30s)
+        var (sAfterHover, pAfterHover, _) = resolver.Evaluate(
+            obs,
+            rawIdleDuration: TimeSpan.FromSeconds(10),
+            isSessionLocked: false,
+            isSystemSuspended: false,
+            settings,
+            globalBehavioursPaused: false,
+            tWake.AddSeconds(10),
+            mouseIdleDuration: TimeSpan.FromSeconds(25));
+        Assert.False(sAfterHover.IsSleeping);
+        Assert.Equal(DesktopContext.Normal, pAfterHover.EffectiveContext);
+
+        // At tWake + 31s with 31s mouse inactivity -> enters sleep again
+        var (sSleep2, _, _) = resolver.Evaluate(
+            obs,
+            rawIdleDuration: TimeSpan.FromSeconds(31),
+            isSessionLocked: false,
+            isSystemSuspended: false,
+            settings,
+            globalBehavioursPaused: false,
+            tWake.AddSeconds(31),
+            mouseIdleDuration: TimeSpan.FromSeconds(31));
+        Assert.True(sSleep2.IsSleeping);
+
+        // 7 & 9. Priority notification does NOT wake Bloop when PriorityNotificationWakeEnabled is disabled
+        var disabledWakeSettings = settings with { PriorityNotificationWakeEnabled = false };
+        bool disabledWake = resolver.TryWakeFromPriorityNotification(
+            "UrgentToast",
+            disabledWakeSettings,
+            globalBehavioursPaused: false,
+            out var rejectDisabledEvt,
+            tWake.AddSeconds(32));
+        Assert.False(disabledWake);
+        Assert.NotNull(rejectDisabledEvt);
+        Assert.Equal("NotificationWakeRejected", rejectDisabledEvt!.EventName);
+        Assert.Equal("PriorityNotificationWakeDisabled", rejectDisabledEvt.PolicyReason);
+        Assert.True(resolver.IsSleeping);
+
+        // 8 & 10. Priority notification wakes Bloop once when enabled; subsequent call in same batch returns false
+        bool prioWake = resolver.TryWakeFromPriorityNotification(
+            "PriorityBatch(High)",
+            settings,
+            globalBehavioursPaused: false,
+            out var prioWakeEvt,
+            tWake.AddSeconds(33));
+        Assert.True(prioWake);
+        Assert.NotNull(prioWakeEvt);
+        Assert.Equal("NotificationWakeAccepted", prioWakeEvt!.EventName);
+        Assert.False(resolver.IsSleeping);
+
+        bool secondWakeInBatch = resolver.TryWakeFromPriorityNotification(
+            "PriorityBatch(Critical)",
+            settings,
+            globalBehavioursPaused: false,
+            out var secondEvt,
+            tWake.AddSeconds(33));
+        Assert.False(secondWakeInBatch);
+        Assert.Null(secondEvt);
+
+        // 11, 12, 13. FullScreen, SessionLock, and SystemSuspend override Sleep and suppress entry
+        var fullScreenObs = MakeObservation(
+            processName: "game",
+            isMaximized: false,
+            hasCaption: false,
+            winLeft: 0, winTop: 0, winRight: 1920, winBottom: 1080);
+        var tFs = tWake.AddSeconds(70);
+        _ = resolver.Evaluate(fullScreenObs, TimeSpan.FromSeconds(5), false, false, settings, false, tFs, TimeSpan.FromSeconds(5));
+        // Confirm FullScreen after 1s while mouse idle is still 6s (< 30s)
+        _ = resolver.Evaluate(fullScreenObs, TimeSpan.FromSeconds(6), false, false, settings, false, tFs.AddSeconds(1), TimeSpan.FromSeconds(6));
+        // Now mouse idle reaches 35s while FullScreen is active -> SleepSuppressedByHigherPriorityState
+        var (sFullScreen, pFullScreen, eFs) = resolver.Evaluate(fullScreenObs, TimeSpan.FromSeconds(35), false, false, settings, false, tFs.AddSeconds(40), TimeSpan.FromSeconds(35));
+        Assert.False(sFullScreen.IsSleeping);
+        Assert.Equal(DesktopContext.FullScreen, pFullScreen.EffectiveContext);
+        Assert.False(pFullScreen.ShouldShowMascot);
+        Assert.Contains(eFs, e => e.EventName == "SleepSuppressedByHigherPriorityState");
+    }
 }

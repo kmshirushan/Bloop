@@ -176,7 +176,10 @@ public partial class SettingsWindow : Window
         SuppressRandomClickInFocusCheckBox.IsChecked = a.SuppressRandomClickInFocus;
         InactivityDetectionCheckBox.IsChecked = a.InactivityDetectionEnabled;
         AutoQuietModeCheckBox.IsChecked = a.AutoQuietModeEnabled;
+        AutoSleepCheckBox.IsChecked = a.AutoSleepEnabled;
+        PriorityNotificationWakeCheckBox.IsChecked = a.PriorityNotificationWakeEnabled;
         SessionPowerAwarenessCheckBox.IsChecked = a.SessionAwarenessEnabled && a.PowerAwarenessEnabled;
+        SleepAfterSlider.Value = a.SleepAfterSeconds;
         FullScreenRestoreDelaySlider.Value = a.FullScreenRestoreDelayMs;
         QuietThresholdSlider.Value = a.QuietThresholdSeconds;
         AwayThresholdSlider.Value = a.AwayThresholdSeconds;
@@ -563,6 +566,8 @@ public partial class SettingsWindow : Window
             AnnoyanceThresholdValueText.Text = $"{AnnoyanceThresholdSlider.Value:0} clicks";
         if (FullScreenRestoreDelayValueText is not null)
             FullScreenRestoreDelayValueText.Text = $"{FullScreenRestoreDelaySlider.Value:0} ms";
+        if (SleepAfterValueText is not null)
+            SleepAfterValueText.Text = $"{SleepAfterSlider.Value:0} s";
         if (QuietThresholdValueText is not null)
             QuietThresholdValueText.Text = $"{QuietThresholdSlider.Value:0} s";
         if (AwayThresholdValueText is not null)
@@ -626,6 +631,8 @@ public partial class SettingsWindow : Window
 
         int peakClicks = Math.Clamp((int)Math.Round(AnnoyanceThresholdSlider.Value), 3, 10);
         bool reactionsOn = NotificationReactionsCheckBox.IsChecked == true;
+        bool autoSleepEnabled = AutoSleepCheckBox.IsChecked == true && SleepModeCheckBox.IsChecked == true;
+        double sleepAfterSec = Math.Clamp(SleepAfterSlider.Value, 5.0, 3600.0);
 
         var updatedBehaviours = _behaviourScheduler.Settings with
         {
@@ -637,7 +644,7 @@ public partial class SettingsWindow : Window
             EdgeBalancingEnabled = EdgeBalancingCheckBox.IsChecked == true,
             CursorChasingEnabled = CursorChasingCheckBox.IsChecked == true,
             AttentionSeekingEnabled = AttentionSeekingCheckBox.IsChecked == true,
-            SleepModeEnabled = SleepModeCheckBox.IsChecked == true,
+            SleepModeEnabled = autoSleepEnabled,
             WelcomeBackReactionEnabled = WelcomeBackCheckBox.IsChecked == true,
             RandomClickReactionsEnabled = RandomClickCheckBox.IsChecked == true,
             RepeatedClickAnnoyanceEnabled = RepeatedClickAnnoyanceCheckBox.IsChecked == true,
@@ -679,7 +686,9 @@ public partial class SettingsWindow : Window
             SuppressRandomClickInFocus = SuppressRandomClickInFocusCheckBox.IsChecked == true,
             InactivityDetectionEnabled = InactivityDetectionCheckBox.IsChecked == true,
             AutoQuietModeEnabled = AutoQuietModeCheckBox.IsChecked == true,
-            AutoSleepEnabled = SleepModeCheckBox.IsChecked == true,
+            AutoSleepEnabled = autoSleepEnabled,
+            SleepAfterSeconds = sleepAfterSec,
+            PriorityNotificationWakeEnabled = PriorityNotificationWakeCheckBox.IsChecked == true,
             WelcomeBackReactionEnabled = WelcomeBackCheckBox.IsChecked == true,
             QuietThresholdSeconds = quietSec,
             AwayThresholdSeconds = awaySec,

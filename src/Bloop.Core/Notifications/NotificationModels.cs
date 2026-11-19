@@ -93,7 +93,11 @@ public sealed record NotificationReactionDecision(
     int UnreadCount,
     string? SuppressionReason = null,
     string? PreviewAppDisplayName = null,
-    string? PreviewTitle = null
+    string? PreviewTitle = null,
+    string? PreviewBody = null,
+    byte[]? PreviewLogoPngBytes = null,
+    DateTimeOffset? PreviewTimestampUtc = null,
+    string? PreviewNotificationId = null
 );
 
 public sealed record NotificationSettings
@@ -176,6 +180,8 @@ public interface INotificationRepository
 public interface INotificationReactionScheduler
 {
     event EventHandler<NotificationReactionDecision>? ReactionDecided;
+    int PendingBatchCount { get; }
+    NotificationImportance GetPendingBatchHighestImportance();
     NotificationImportance ClassifyImportance(NotificationItem item, NotificationSettings settings);
     void EnqueueNewNotifications(IReadOnlyList<NotificationItem> newlyArrived, DateTimeOffset nowUtc, NotificationSettings settings);
     NotificationReactionDecision? EvaluatePendingBatch(

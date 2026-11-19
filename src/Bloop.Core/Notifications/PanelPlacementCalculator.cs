@@ -47,6 +47,64 @@ public static class PanelPlacementCalculator
         return (Math.Round(chosenLeft), Math.Round(chosenTop));
     }
 
+    /// <summary>
+    /// Computes the DPI-aware placement for the floating Liquid Glass Toast Window
+    /// relative to Bloop, avoiding overlap with the mascot or monitor edges.
+    /// </summary>
+    public static (double LeftDip, double TopDip, double EntranceOffsetX) CalculateToastBubblePosition(
+        double mascotLeftDip,
+        double mascotTopDip,
+        double mascotWidthDip,
+        double mascotHeightDip,
+        double toastWidthDip,
+        double toastHeightDip,
+        WorkAreaBounds workArea)
+    {
+        double mascotCenterX = mascotLeftDip + mascotWidthDip * 0.5;
+        double workCenterX = (workArea.Left + workArea.Right) * 0.5;
+
+        const double gap = 10.0;
+        double candidateLeft = mascotLeftDip - toastWidthDip - gap;
+        double candidateRight = mascotLeftDip + mascotWidthDip + gap;
+
+        double chosenLeft;
+        double entranceOffsetX;
+        if (mascotCenterX >= workCenterX)
+        {
+            if (candidateLeft >= workArea.Left + 8.0)
+            {
+                chosenLeft = candidateLeft;
+                entranceOffsetX = 14.0; // Slides gently leftwards away from Bloop
+            }
+            else
+            {
+                chosenLeft = Math.Min(candidateRight, workArea.Right - toastWidthDip - 8.0);
+                entranceOffsetX = -14.0;
+            }
+        }
+        else
+        {
+            if (candidateRight + toastWidthDip <= workArea.Right - 8.0)
+            {
+                chosenLeft = candidateRight;
+                entranceOffsetX = -14.0; // Slides gently rightwards away from Bloop
+            }
+            else
+            {
+                chosenLeft = Math.Max(candidateLeft, workArea.Left + 8.0);
+                entranceOffsetX = 14.0;
+            }
+        }
+
+        // Position slightly towards the upper half of Bloop like an organic floating speech/thought bubble
+        double idealTop = mascotTopDip + (mascotHeightDip * 0.18) - (toastHeightDip * 0.25);
+        double minTop = workArea.Top + 10.0;
+        double maxTop = Math.Max(minTop, workArea.Bottom - toastHeightDip - 10.0);
+        double chosenTop = Math.Clamp(idealTop, minTop, maxTop);
+
+        return (Math.Round(chosenLeft), Math.Round(chosenTop), entranceOffsetX);
+    }
+
     public static NotificationPanelPlacement RecoverDetachedPlacement(
         NotificationPanelPlacement saved,
         WorkAreaBounds targetWorkArea)

@@ -11,7 +11,8 @@ public enum DesktopContext
     FullScreen = 3,
     Away = 4,
     SessionLocked = 5,
-    SystemSuspended = 6
+    SystemSuspended = 6,
+    Sleeping = 7
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -101,7 +102,9 @@ public sealed record AwarenessSnapshot
     public bool IsFullScreen { get; init; }
     public bool IsMaximizedWindow { get; init; }
     public bool IsUserIdle { get; init; }
+    public bool IsSleeping { get; init; }
     public TimeSpan IdleDuration { get; init; } = TimeSpan.Zero;
+    public TimeSpan MouseIdleDuration { get; init; } = TimeSpan.Zero;
     public TimeSpan ForegroundStableDuration { get; init; } = TimeSpan.Zero;
     public bool IsSessionLocked { get; init; }
     public bool IsSystemSuspended { get; init; }
@@ -150,6 +153,8 @@ public sealed record AwarenessSettings
     public bool InactivityDetectionEnabled { get; init; } = true;
     public bool AutoQuietModeEnabled { get; init; } = true;
     public bool AutoSleepEnabled { get; init; } = true;
+    public double SleepAfterSeconds { get; init; } = 30.0;
+    public bool PriorityNotificationWakeEnabled { get; init; } = true;
     public bool WelcomeBackReactionEnabled { get; init; } = true;
     public double QuietThresholdSeconds { get; init; } = 60.0;
     public double AwayThresholdSeconds { get; init; } = 300.0;
@@ -207,6 +212,10 @@ public static class AwarenessValidator
             ? Math.Clamp(raw.PostRestoreSettlingSeconds, 1.0, 30.0)
             : 4.0;
 
+        double sleepAfterSec = double.IsFinite(raw.SleepAfterSeconds)
+            ? Math.Clamp(raw.SleepAfterSeconds, 5.0, 3600.0)
+            : 30.0;
+
         double quietSec = double.IsFinite(raw.QuietThresholdSeconds)
             ? Math.Clamp(raw.QuietThresholdSeconds, 10.0, 1800.0)
             : 60.0;
@@ -244,6 +253,7 @@ public static class AwarenessValidator
             FullScreenRestoreDelayMs = restoreDelay,
             FullScreenGeometryTolerancePx = tolerancePx,
             PostRestoreSettlingSeconds = settlingSec,
+            SleepAfterSeconds = sleepAfterSec,
             QuietThresholdSeconds = quietSec,
             AwayThresholdSeconds = awaySec,
             SleepThresholdSeconds = sleepSec,
@@ -317,10 +327,13 @@ public interface IAwarenessProvider : IDisposable
 
     ForegroundWindowObservation ObserveForegroundWindow(ReadOnlySpan<IntPtr> bloopOwnedWindowHandles);
     TimeSpan GetUserIdleDuration();
+    (bool MovedSinceLastSample, int ScreenX, int ScreenY, TimeSpan MouseIdleDuration) SampleMouseActivity(DateTimeOffset nowUtc);
 }
 
 public interface IContextPolicyResolver
 {
+    bool IsSleeping { get; }
+
     (AwarenessSnapshot Snapshot, AwarenessPolicy Policy, IReadOnlyList<AwarenessDiagnosticEvent> Events) Evaluate(
         ForegroundWindowObservation observation,
         TimeSpan rawIdleDuration,
@@ -328,7 +341,11 @@ public interface IContextPolicyResolver
         bool isSystemSuspended,
         AwarenessSettings settings,
         bool globalBehavioursPaused,
-        DateTimeOffset nowUtc);
+        DateTimeOffset nowUtc,
+        TimeSpan? mouseIdleDuration = null,
+        bool mouseMovedOnDesktop = false);
 
+    bool TryWakeFromPointerEntry(DateTimeOffset nowUtc, out AwarenessDiagnosticEvent? wakeEvent);
+    bool TryWakeFromPriorityNotification(string sourceSummary, AwarenessSettings settings, bool globalBehavioursPaused, out AwarenessDiagnosticEvent? wakeEvent, DateTimeOffset? timestampUtc = null);
     void ResetState(DateTimeOffset nowUtc);
 }

@@ -39,6 +39,7 @@ export class MouseController {
 
   private isPointerDown = false;
   private isDragging = false;
+  private wasMascotHit = false;
   private downScreenX = 0;
   private downScreenY = 0;
   private lastScreenX = 0;
@@ -162,14 +163,12 @@ export class MouseController {
           const kind = String(msg.payload?.kind ?? 'subtle');
           const count = Number(msg.payload?.unreadCount ?? 0);
           const appName = msg.payload?.appDisplayName ? String(msg.payload.appDisplayName) : '';
-          const title = msg.payload?.title ? String(msg.payload.title) : '';
           const commandId = msg.payload?.commandId ? String(msg.payload.commandId) : null;
 
           this.updateUnreadBadge(count);
 
           if (kind === 'entrance') {
             this.expressions.triggerSurprised();
-            this.showToastPreview(appName ? `${appName}: ${title}` : title || 'Important notification');
             this.onStateLabelChange?.(appName ? `Alert: ${appName}` : 'Important Alert!');
           } else {
             // Subtle edge glance: brief eye shift + curious expression
@@ -285,6 +284,13 @@ export class MouseController {
 
     if (!this.isPointerDown) {
       const hit = this.hitTestMascot(e.clientX, e.clientY);
+      if (hit && !this.wasMascotHit) {
+        this.postToHost('pointer:hover_enter', {
+          screenX: e.screenX,
+          screenY: e.screenY
+        });
+      }
+      this.wasMascotHit = hit;
       this.expressions.setHovered(hit);
       return;
     }
@@ -382,8 +388,6 @@ export class MouseController {
     }
   }
 
-  private previewTimeoutId: number | null = null;
-
   private updateUnreadBadge(unreadCount: number): void {
     const badge = document.getElementById('unread-badge');
     if (!badge) return;
@@ -395,21 +399,8 @@ export class MouseController {
     }
   }
 
-  private showToastPreview(text: string): void {
-    const preview = document.getElementById('toast-preview');
-    if (!preview) return;
-    preview.textContent = text;
-    preview.classList.add('visible');
-    if (this.previewTimeoutId !== null) {
-      window.clearTimeout(this.previewTimeoutId);
-    }
-    this.previewTimeoutId = window.setTimeout(() => {
-      preview.classList.remove('visible');
-      this.previewTimeoutId = null;
-    }, 3200);
-  }
-
   private onPointerLeave(): void {
+    this.wasMascotHit = false;
     if (!this.isDragging) {
       this.expressions.setHovered(false);
     }

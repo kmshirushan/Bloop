@@ -17,6 +17,7 @@ using Bloop.Core.Models;
 using Bloop.Core.Movement;
 using Bloop.Core.Notifications;
 using Bloop.Core.Personality;
+using Bloop.Core.Productivity;
 using Bloop.Desktop.Appearance;
 using Bloop.Desktop.Awareness;
 using Bloop.Desktop.Services;
@@ -40,6 +41,10 @@ public partial class MascotWindow : Window
     private readonly IAppearanceRepository _appearanceRepository;
     private readonly AwarenessCoordinator _awarenessCoordinator;
     private readonly DiagnosticsLogService _diagnostics;
+    private readonly ILauncherCatalogService? _launcherService;
+    private readonly IProductivityRepository? _productivityRepository;
+    private readonly CountdownTimerEngine? _timerEngine;
+    private readonly ReminderScheduler? _reminderScheduler;
     private readonly DispatcherTimer _companionTimer;
 
     private AppearanceProfile _currentAppearanceProfile = AppearanceDefaults.CreateDefaultProfile();
@@ -54,7 +59,10 @@ public partial class MascotWindow : Window
     private double _dragStartCursorScreenY;
     private int _lastCursorPxX = int.MinValue;
     private int _lastCursorPxY = int.MinValue;
+    private bool _wasPointerInsideMascotSphere;
     private int _autonomyTickCounter;
+    private int _timerTickCounter;
+    private DateTimeOffset _lastReminderEvalUtc = DateTimeOffset.MinValue;
     private DockingEdge _lastPreviewEdge = DockingEdge.None;
 
     // Return-to-edge tracking after a High/Critical notification center-screen entrance
@@ -70,6 +78,7 @@ public partial class MascotWindow : Window
 
     private NotificationWindow? _demoPanelWindow;
     private SettingsWindow? _settingsWindow;
+    private ToastBubbleWindow? _toastBubbleWindow;
 
     public MascotWindow(
         WebViewService webViewService,
@@ -83,7 +92,11 @@ public partial class MascotWindow : Window
         INotificationReactionScheduler notificationReactionScheduler,
         IAppearanceRepository appearanceRepository,
         AwarenessCoordinator awarenessCoordinator,
-        DiagnosticsLogService diagnostics)
+        DiagnosticsLogService diagnostics,
+        ILauncherCatalogService? launcherService = null,
+        IProductivityRepository? productivityRepository = null,
+        CountdownTimerEngine? timerEngine = null,
+        ReminderScheduler? reminderScheduler = null)
     {
         InitializeComponent();
 
@@ -99,6 +112,10 @@ public partial class MascotWindow : Window
         _appearanceRepository = appearanceRepository;
         _awarenessCoordinator = awarenessCoordinator;
         _diagnostics = diagnostics;
+        _launcherService = launcherService;
+        _productivityRepository = productivityRepository;
+        _timerEngine = timerEngine;
+        _reminderScheduler = reminderScheduler;
         _currentAppearanceProfile = _appearanceRepository.GetActiveProfile();
 
         _webViewService.MessageReceived += OnRendererMessageReceived;
@@ -120,6 +137,7 @@ public partial class MascotWindow : Window
 
         _windowService.ResetPositionRequested += (_, _) => ResetToFreeBottomRight();
         _windowService.ToggleDemoPanelRequested += (_, _) => ToggleDemoPanel();
+        _windowService.OpenProductivitySubTabRequested += (_, subTab) => OpenWorkspacePanelSubTab(subTab);
         _windowService.OpenSettingsRequested += (_, _) => ShowSettingsWindow();
         _windowService.DevAutonomousHopRequested += (_, _) => TriggerDevAutonomousHop();
         _windowService.ToggleFocusModeRequested += (_, _) =>
@@ -190,6 +208,7 @@ public partial class MascotWindow : Window
         _companionTimer.Start();
         _awarenessCoordinator.Start(GetBloopOwnedWindowHandles);
         _ = _notificationCoordinator.InitializeAsync();
+        EvaluateProductivityTimersAndReminders(DateTimeOffset.UtcNow, isStartupRecovery: true);
 
         try
         {
@@ -213,7 +232,8 @@ public partial class MascotWindow : Window
     {
         IntPtr panelHwnd = _demoPanelWindow is not null ? new WindowInteropHelper(_demoPanelWindow).Handle : IntPtr.Zero;
         IntPtr settingsHwnd = _settingsWindow is not null ? new WindowInteropHelper(_settingsWindow).Handle : IntPtr.Zero;
-        return [_hwnd, panelHwnd, settingsHwnd];
+        IntPtr toastHwnd = _toastBubbleWindow is not null ? new WindowInteropHelper(_toastBubbleWindow).Handle : IntPtr.Zero;
+        return [_hwnd, panelHwnd, settingsHwnd, toastHwnd];
     }
 
     private void OnMascotVisibilityPolicyChanged(object? sender, (bool ShouldShowMascot, AwarenessPolicy Policy) e)
@@ -223,7 +243,7 @@ public partial class MascotWindow : Window
             _isHiddenByAwareness = true;
             CancelActiveHop($"HiddenByAwareness({e.Policy.Reason})", notifyController: true);
             _returnFromEntranceDueUtc = null;
-            _companionTimer.Stop();
+            _toastBubbleWindow?.DismissImmediately();
 
             SendAwarenessStateToRenderer(e.Policy);
 
@@ -248,7 +268,10 @@ public partial class MascotWindow : Window
 
             SyncDockingConfigToRenderer();
             SendAwarenessStateToRenderer(e.Policy);
-            _companionTimer.Start();
+            if (!_companionTimer.IsEnabled)
+            {
+                _companionTimer.Start();
+            }
 
             _diagnostics.RecordCustom(
                 "MascotRestoredAfterFullScreen",
@@ -1119,6 +1142,504 @@ public partial class MascotWindow : Window
         }
     }
 
+    public async Task RunMilestone6_1And7VerificationSequenceAsync(string? screenshotOutputDir = null)
+    {
+        try
+        {
+            var outDir = !string.IsNullOrWhiteSpace(screenshotOutputDir)
+                ? screenshotOutputDir
+                : Path.Combine(AppContext.BaseDirectory, "m61_m7_verification");
+            Directory.CreateDirectory(outDir);
+
+            var procBefore = Process.GetCurrentProcess();
+            _diagnostics.RecordCustom(
+                "M7PerfBaseline",
+                $"Before M6.1+M7 Sequence: WorkingSet={procBefore.WorkingSet64 / (1024.0 * 1024.0):F1}MB, ManagedHeap={GC.GetTotalMemory(false) / (1024.0 * 1024.0):F2}MB, TotalCpuMs={procBefore.TotalProcessorTime.TotalMilliseconds:F0}ms");
+
+            await Task.Delay(900);
+            ResetToFreeBottomRight();
+
+            // Apply Sapphire Liquid Glass profile
+            var baseProfile = _appearanceRepository.ResetProfileToDefaults(AppearanceDefaults.DefaultProfileId);
+            var liquidChar = AppearancePresets.ApplyCharacterPreset(baseProfile.Character, CharacterMaterialPreset.LiquidGlass) with
+            {
+                BodyColor = "#0284C7",
+                AccentColor = "#38BDF8",
+                EquippedAccessories = ["headphones"]
+            };
+            var liquidPanel = AppearancePresets.ApplyPanelPreset(baseProfile.Panel, PanelThemePreset.LiquidGlass);
+            ApplyAppearanceProfile(baseProfile with { Character = liquidChar, Panel = liquidPanel }, isPreview: false);
+            await Task.Delay(300);
+
+            var t0 = DateTimeOffset.UtcNow;
+            var normalObs = new ForegroundWindowObservation(
+                WindowHandle: new IntPtr(0x40010),
+                ProcessId: 6100,
+                ProcessName: "explorer",
+                ApplicationName: "Windows Explorer",
+                WindowClassName: "CabinetWClass",
+                IsValidExternalWindow: true,
+                IsBloopOwnedWindow: false,
+                IsShellOrDesktopSurface: false,
+                IsVisible: true,
+                IsMinimized: false,
+                IsMaximized: false,
+                HasCaptionOrThickFrame: true,
+                WindowLeftPx: 120, WindowTopPx: 100, WindowRightPx: 1400, WindowBottomPx: 900,
+                MonitorLeftPx: 0, MonitorTopPx: 0, MonitorRightPx: 1920, MonitorBottomPx: 1080,
+                WorkAreaLeftPx: 0, WorkAreaTopPx: 0, WorkAreaRightPx: 1920, WorkAreaBottomPx: 1040,
+                MonitorId: "\\\\.\\DISPLAY1");
+
+            // =====================================================================
+            // STAGE 1 (M6.1): Intelligent Sleep & Hover-Only / Priority-Notification Wake
+            // =====================================================================
+            // 1a. Keyboard activity (idleDuration = 1s) while mouse idle reaches 31s (>= 30s default) -> Bloop enters Intelligent Sleep
+            _awarenessCoordinator.EvaluateSyntheticObservation(
+                normalObs,
+                idleDuration: TimeSpan.FromSeconds(1),
+                isSessionLocked: false,
+                isSystemSuspended: false,
+                nowUtc: t0.AddSeconds(31),
+                mouseIdleDuration: TimeSpan.FromSeconds(31),
+                mouseMovedOnDesktop: false);
+
+            // 1b. Desktop mouse movement outside Bloop (mouseIdle = 0s, mouseMovedOnDesktop = true) -> Bloop MUST remain sleeping!
+            _awarenessCoordinator.EvaluateSyntheticObservation(
+                normalObs,
+                idleDuration: TimeSpan.Zero,
+                isSessionLocked: false,
+                isSystemSuspended: false,
+                nowUtc: t0.AddSeconds(34),
+                mouseIdleDuration: TimeSpan.Zero,
+                mouseMovedOnDesktop: true);
+
+            _diagnostics.RecordCustom(
+                "M61Verify_SleepAndDesktopMouseIgnored",
+                $"Context={_awarenessCoordinator.CurrentSnapshot.Context}, IsSleeping={_awarenessCoordinator.CurrentSnapshot.IsSleeping}, MascotVisible={Visibility == Visibility.Visible}, Mood={_personality.CurrentState}");
+
+            // 1c. Pointer enters Bloop's interactive hit area -> Bloop wakes immediately and resets sleep countdown
+            bool wokeByHover = _awarenessCoordinator.NotifyPointerEnteredMascot(t0.AddSeconds(36));
+            _diagnostics.RecordCustom(
+                "M61Verify_PointerHoverWake",
+                $"WokeByHover={wokeByHover}, Context={_awarenessCoordinator.CurrentSnapshot.Context}, IsSleeping={_awarenessCoordinator.CurrentSnapshot.IsSleeping}, Mood={_personality.CurrentState}");
+
+            // 1d. Re-enter sleep at t0+70s, verify ordinary notification does NOT wake, then verify Priority (High) notification wakes once
+            _awarenessCoordinator.EvaluateSyntheticObservation(
+                normalObs,
+                idleDuration: TimeSpan.FromSeconds(32),
+                isSessionLocked: false,
+                isSystemSuspended: false,
+                nowUtc: t0.AddSeconds(70),
+                mouseIdleDuration: TimeSpan.FromSeconds(32),
+                mouseMovedOnDesktop: false);
+            bool ordinaryWoke = _awarenessCoordinator.TryRequestNotificationWake(NotificationImportance.Normal, 1, "OrdinaryApp");
+            bool priorityWoke = _awarenessCoordinator.TryRequestNotificationWake(NotificationImportance.High, 2, "CalendarUrgent");
+            _diagnostics.RecordCustom(
+                "M61Verify_PriorityNotificationWake",
+                $"OrdinaryWoke={ordinaryWoke}, PriorityWoke={priorityWoke}, ContextAfterPriority={_awarenessCoordinator.CurrentSnapshot.Context}");
+
+            // =====================================================================
+            // STAGE 2 (M7.1): Quick Launcher Workspace View
+            // =====================================================================
+            OpenWorkspacePanelSubTab(0);
+            await Task.Delay(350);
+            var catalogCount = _launcherService?.GetCatalogSnapshot().Count ?? 0;
+            _diagnostics.RecordCustom(
+                "M71Verify_QuickLauncher",
+                $"DiscoveredStartMenuApps={catalogCount}");
+            await CaptureM51SceneAsync(outDir, "m7_01_quick_launcher_workspace.png", BackdropKind.DesktopWindowsBehind, includePanel: true, includeMascot: true, includeSettings: false);
+
+            // =====================================================================
+            // STAGE 3 (M7.2): Tasks, Wall-Clock Countdown Timer & Reminders View
+            // =====================================================================
+            if (_productivityRepository is not null && _timerEngine is not null && _reminderScheduler is not null)
+            {
+                _ = _productivityRepository.SaveTask(new TodoTaskItem(
+                    Id: "m7-verify-task-1",
+                    Title: "Verify M6.1 Hover-Only Sleep Wake",
+                    Priority: TaskPriority.High,
+                    IsCompleted: true,
+                    CreatedAtUtc: t0,
+                    CompletedAtUtc: t0.AddMinutes(1),
+                    UpdatedAtUtc: t0.AddMinutes(1)));
+                _ = _productivityRepository.SaveTask(new TodoTaskItem(
+                    Id: "m7-verify-task-2",
+                    Title: "Ship Milestone 7 Productivity Suite",
+                    Priority: TaskPriority.High,
+                    IsCompleted: false,
+                    CreatedAtUtc: t0.AddMinutes(2),
+                    UpdatedAtUtc: t0.AddMinutes(2)));
+                _ = _productivityRepository.SaveTask(new TodoTaskItem(
+                    Id: "m7-verify-task-3",
+                    Title: "Test Wall-Clock Countdown Timer",
+                    Priority: TaskPriority.Normal,
+                    IsCompleted: false,
+                    CreatedAtUtc: t0.AddMinutes(3),
+                    UpdatedAtUtc: t0.AddMinutes(3)));
+
+                var rem = _productivityRepository.SaveReminder(new ReminderItem(
+                    Id: "m7-verify-rem-1",
+                    Title: "Milestone 7 Demo Review",
+                    TriggerAtUtc: t0.AddMinutes(15),
+                    Priority: TaskPriority.High,
+                    CreatedAtUtc: t0));
+
+                var timerSnap = _timerEngine.Start(TimeSpan.FromMinutes(15), "Deep Work Sprint", t0);
+                _ = _timerEngine.EvaluateTick(t0.AddMinutes(3).AddSeconds(18)); // 11:42 remaining via wall-clock timestamp
+                _productivityRepository.SaveTimerSnapshot(_timerEngine.Current);
+
+                _diagnostics.RecordCustom(
+                    "M72Verify_TasksTimerReminders",
+                    $"TasksCount={_productivityRepository.GetTasks().Count}, PendingReminders={_productivityRepository.GetReminders().Count}, TimerRemaining={_timerEngine.Current.RemainingDuration:mm\\:ss}, ReminderScheduled={rem.Title}");
+            }
+
+            OpenWorkspacePanelSubTab(1);
+            await Task.Delay(350);
+            await CaptureM51SceneAsync(outDir, "m7_02_tasks_timer_reminders.png", BackdropKind.DarkSapphire, includePanel: true, includeMascot: true, includeSettings: false);
+
+            // =====================================================================
+            // STAGE 4 (M7.3): Quick Notes View
+            // =====================================================================
+            if (_productivityRepository is not null)
+            {
+                _ = _productivityRepository.SaveNote(new QuickNoteItem(
+                    Id: "m7-verify-note-1",
+                    Title: "Architecture Notes — M6.1 & M7",
+                    Content: "• Mouse inactivity sleep defaults to 30s.\n• Desktop mouse movement outside Bloop never wakes him.\n• Countdown timer uses wall-clock TargetEndUtc.\n• Notes auto-save locally to SQLite.",
+                    CreatedAtUtc: t0,
+                    UpdatedAtUtc: t0.AddMinutes(2)));
+                _ = _productivityRepository.SaveNote(new QuickNoteItem(
+                    Id: "m7-verify-note-2",
+                    Title: "Sprint Backlog",
+                    Content: "All offline productivity tools verified with zero cloud dependencies.",
+                    CreatedAtUtc: t0.AddMinutes(-10),
+                    UpdatedAtUtc: t0.AddMinutes(1)));
+            }
+
+            OpenWorkspacePanelSubTab(2);
+            await Task.Delay(350);
+            await CaptureM51SceneAsync(outDir, "m7_03_quick_notes_workspace.png", BackdropKind.DesktopWindowsBehind, includePanel: true, includeMascot: true, includeSettings: false);
+
+            // Capture updated SettingsWindow showing M6.1 Automatic Sleep, SleepAfter (30s), and Priority Notification Wake controls
+            ShowSettingsWindow();
+            await Task.Delay(300);
+            if (_settingsWindow is not null)
+            {
+                _settingsWindow.ScrollToFraction(0.58);
+                await Task.Delay(200);
+                await CaptureM51SceneAsync(outDir, "m7_04_settings_m61_sleep_controls.png", BackdropKind.DesktopWindowsBehind, includePanel: false, includeMascot: false, includeSettings: true);
+                _settingsWindow.Close();
+                _settingsWindow = null;
+            }
+
+            var procEnd = Process.GetCurrentProcess();
+            _diagnostics.RecordCustom(
+                "M61M7VerifyComplete",
+                $"WorkingSet={procEnd.WorkingSet64 / (1024.0 * 1024.0):F1}MB, ManagedHeap={GC.GetTotalMemory(false) / (1024.0 * 1024.0):F2}MB, TotalCpuMs={procEnd.TotalProcessorTime.TotalMilliseconds:F0}ms");
+        }
+        finally
+        {
+            System.Windows.Application.Current.Shutdown();
+        }
+    }
+
+    public async Task RunMilestone7_4VerificationSequenceAsync(string? screenshotOutputDir = null)
+    {
+        try
+        {
+            var outDir = !string.IsNullOrWhiteSpace(screenshotOutputDir)
+                ? screenshotOutputDir
+                : Path.Combine(AppContext.BaseDirectory, "m7_4_verification");
+            Directory.CreateDirectory(outDir);
+
+            var procBefore = Process.GetCurrentProcess();
+            _diagnostics.RecordCustom(
+                "M74PerfBaseline",
+                $"Before M7.4 Sequence: WorkingSet={procBefore.WorkingSet64 / (1024.0 * 1024.0):F1}MB, ManagedHeap={GC.GetTotalMemory(false) / (1024.0 * 1024.0):F2}MB, TotalCpuMs={procBefore.TotalProcessorTime.TotalMilliseconds:F0}ms");
+
+            await Task.Delay(900);
+            ResetToFreeBottomRight();
+
+            // Apply Sapphire Liquid Glass profile
+            var baseProfile = _appearanceRepository.ResetProfileToDefaults(AppearanceDefaults.DefaultProfileId);
+            var liquidChar = AppearancePresets.ApplyCharacterPreset(baseProfile.Character, CharacterMaterialPreset.LiquidGlass) with
+            {
+                BodyColor = "#0284C7",
+                AccentColor = "#38BDF8",
+                EquippedAccessories = []
+            };
+            var liquidPanel = AppearancePresets.ApplyPanelPreset(baseProfile.Panel, PanelThemePreset.LiquidGlass);
+            ApplyAppearanceProfile(baseProfile with { Character = liquidChar, Panel = liquidPanel }, isPreview: false);
+            await Task.Delay(300);
+
+            // =====================================================================
+            // PART 1: LIQUID GLASS TOAST NOTIFICATION REDESIGN VERIFICATION
+            // =====================================================================
+            // 1. Capture Legacy HTMLPill Before-State Reference (simulated on canvas) vs New Liquid Glass Toast Bubbles
+            CaptureLegacyToastReferenceImage(outDir, "m74_01_before_legacy_pill_toast.png");
+
+            var nowUtc = DateTimeOffset.UtcNow;
+
+            // 2. Normal-Priority Liquid Glass Toast Bubble (Deep Teal / Aquatic Sapphire) on Dark & Bright backdrops
+            var normalDecision = new NotificationReactionDecision(
+                ShouldReact: true,
+                ReactionKind: NotificationReactionKind.SubtleEdgeGlance,
+                HighestImportance: NotificationImportance.Normal,
+                BatchCount: 1,
+                UnreadCount: 1,
+                PreviewAppDisplayName: "Outlook Calendar",
+                PreviewTitle: "Design Sync — Liquid Glass Toast",
+                PreviewBody: "Floating deep-teal capsule with subtle cyan rim illumination and smooth cubic entrance.",
+                PreviewTimestampUtc: nowUtc);
+
+            ExecuteNotificationReactionDecision(normalDecision, nowUtc, _windowService.GetWorkAreaForWindow(this));
+            await Task.Delay(380); // Wait for 240ms entrance animation to settle
+            await CaptureM51SceneAsync(outDir, "m74_02_after_toast_normal_dark.png", BackdropKind.DesktopWindowsBehind, includePanel: false, includeMascot: true, includeSettings: false, includeToast: true);
+            await CaptureM51SceneAsync(outDir, "m74_03_after_toast_normal_bright.png", BackdropKind.BrightDaylight, includePanel: false, includeMascot: true, includeSettings: false, includeToast: true);
+
+            // 3. High-Priority Liquid Glass Toast Bubble (Electric Cyan / Aqua Rim + PRIORITY Pill + Batch Indicator)
+            var highDecision = new NotificationReactionDecision(
+                ShouldReact: true,
+                ReactionKind: NotificationReactionKind.SubtleEdgeGlance,
+                HighestImportance: NotificationImportance.High,
+                BatchCount: 3,
+                UnreadCount: 4,
+                PreviewAppDisplayName: "Bloop Timer",
+                PreviewTitle: "Timer Complete: Deep Focus Sprint",
+                PreviewBody: "Completed 25:00 countdown with monotonic Stopwatch precision and zero drift.",
+                PreviewTimestampUtc: nowUtc);
+
+            ExecuteNotificationReactionDecision(highDecision, nowUtc, _windowService.GetWorkAreaForWindow(this));
+            await Task.Delay(380);
+            await CaptureM51SceneAsync(outDir, "m74_04_after_toast_high_priority.png", BackdropKind.DarkSapphire, includePanel: false, includeMascot: true, includeSettings: false, includeToast: true);
+
+            // 4. Critical-Priority Liquid Glass Toast Bubble (Coral-Rose & Cyan Rim + CRITICAL Pill)
+            var criticalDecision = new NotificationReactionDecision(
+                ShouldReact: true,
+                ReactionKind: NotificationReactionKind.SubtleEdgeGlance,
+                HighestImportance: NotificationImportance.Critical,
+                BatchCount: 1,
+                UnreadCount: 5,
+                PreviewAppDisplayName: "Windows Security",
+                PreviewTitle: "Firewall & SmartScreen Protection Active",
+                PreviewBody: "Urgent security alert rendered with coral-cyan edge illumination and non-activating window styles.",
+                PreviewTimestampUtc: nowUtc);
+
+            ExecuteNotificationReactionDecision(criticalDecision, nowUtc, _windowService.GetWorkAreaForWindow(this));
+            await Task.Delay(380);
+            await CaptureM51SceneAsync(outDir, "m74_05_after_toast_critical_priority.png", BackdropKind.DesktopWindowsBehind, includePanel: false, includeMascot: true, includeSettings: false, includeToast: true);
+            _toastBubbleWindow?.DismissImmediately();
+
+            // =====================================================================
+            // PART 2: MEASURED RUNTIME TIMER ACCURACY VERIFICATION (TESTS A - F)
+            // =====================================================================
+            if (_timerEngine is not null && _productivityRepository is not null)
+            {
+                OpenWorkspacePanelSubTab(1); // Open Tasks & Timer tab so live UI updates run during the 60s test
+                await Task.Delay(250);
+
+                // --- TEST A & C & D: Real-Time 60-Second Countdown with Stopwatch Measurement ---
+                // During this 60-second real-time run, we also exercise:
+                // - Test C (UI responsiveness: panel open/close + mascot move)
+                // - Test D (Intelligent Sleep entry + Full-Screen hiding while timer runs)
+                var swTestA = Stopwatch.StartNew();
+                var startUtcA = DateTimeOffset.UtcNow;
+                var snapStartA = _timerEngine.Start(TimeSpan.FromSeconds(60), "Test A 60s Accuracy", startUtcA);
+                _productivityRepository.SaveTimerSnapshot(snapStartA);
+                string displayAtStart = CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration);
+
+                await Task.Delay(250); // First 4Hz UI refresh tick (250ms into countdown)
+                string displayAt250ms = CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration);
+
+                _diagnostics.RecordCustom(
+                    "M74TimerTestA_Started",
+                    $"Expected=60.000s, DisplayAt0ms={displayAtStart}, DisplayAt250ms={displayAt250ms} (Must still be 01:00)");
+
+                var normalObs = new ForegroundWindowObservation(
+                    WindowHandle: new IntPtr(0x50010),
+                    ProcessId: 7100,
+                    ProcessName: "explorer",
+                    ApplicationName: "Windows Explorer",
+                    WindowClassName: "CabinetWClass",
+                    IsValidExternalWindow: true,
+                    IsBloopOwnedWindow: false,
+                    IsShellOrDesktopSurface: false,
+                    IsVisible: true,
+                    IsMinimized: false,
+                    IsMaximized: false,
+                    HasCaptionOrThickFrame: true,
+                    WindowLeftPx: 100, WindowTopPx: 100, WindowRightPx: 1400, WindowBottomPx: 900,
+                    MonitorLeftPx: 0, MonitorTopPx: 0, MonitorRightPx: 1920, MonitorBottomPx: 1080,
+                    WorkAreaLeftPx: 0, WorkAreaTopPx: 0, WorkAreaRightPx: 1920, WorkAreaBottomPx: 1040,
+                    MonitorId: "\\\\.\\DISPLAY1");
+
+                var fsObs = normalObs with
+                {
+                    WindowHandle = new IntPtr(0x50020),
+                    ProcessName = "vlc",
+                    ApplicationName = "VLC Media Player",
+                    HasCaptionOrThickFrame = false,
+                    WindowLeftPx = 0, WindowTopPx = 0, WindowRightPx = 1920, WindowBottomPx = 1080
+                };
+
+                bool checked15s = false;
+                bool checked30s = false;
+                bool checked45s = false;
+
+                while (_timerEngine.Current.State == CountdownTimerState.Running && swTestA.Elapsed.TotalSeconds < 65.0)
+                {
+                    await Task.Delay(20);
+                    double elapsedSec = swTestA.Elapsed.TotalSeconds;
+
+                    // At ~15s: Test C — Move mascot & toggle panel while timer runs
+                    if (!checked15s && elapsedSec >= 15.0)
+                    {
+                        checked15s = true;
+                        Left = Math.Max(40, Left - 35);
+                        PositionDemoPanelRelativeToMascot();
+                        var rem15 = _timerEngine.Current.RemainingDuration.TotalSeconds;
+                        _diagnostics.RecordCustom(
+                            "M74TimerTestC_15s_UIAndMove",
+                            $"StopwatchElapsed={elapsedSec:F3}s, EngineRemaining={rem15:F3}s, Sum={(elapsedSec + rem15):F3}s, Display={CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration)}");
+                    }
+
+                    // At ~30s: Test D (Part 1) — Put Bloop into Intelligent Sleep while timer runs
+                    if (!checked30s && elapsedSec >= 30.0)
+                    {
+                        checked30s = true;
+                        _awarenessCoordinator.EvaluateSyntheticObservation(
+                            normalObs,
+                            idleDuration: TimeSpan.FromSeconds(35),
+                            isSessionLocked: false,
+                            isSystemSuspended: false,
+                            nowUtc: DateTimeOffset.UtcNow,
+                            mouseIdleDuration: TimeSpan.FromSeconds(35),
+                            mouseMovedOnDesktop: false);
+                        var rem30 = _timerEngine.Current.RemainingDuration.TotalSeconds;
+                        _diagnostics.RecordCustom(
+                            "M74TimerTestD_30s_DuringSleep",
+                            $"Context={_awarenessCoordinator.CurrentSnapshot.Context}, StopwatchElapsed={elapsedSec:F3}s, EngineRemaining={rem30:F3}s, Display={CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration)}");
+                    }
+
+                    // At ~45s: Test D (Part 2) — Enter Full-Screen (hiding Bloop) from 45s to 52s, then restore before 60s completion
+                    if (!checked45s && elapsedSec >= 45.0)
+                    {
+                        checked45s = true;
+                        var fsTime = DateTimeOffset.UtcNow;
+                        _awarenessCoordinator.EvaluateSyntheticObservation(fsObs, TimeSpan.Zero, false, false, fsTime);
+                        _awarenessCoordinator.EvaluateSyntheticObservation(fsObs, TimeSpan.Zero, false, false, fsTime.AddMilliseconds(500));
+                        var rem45 = _timerEngine.Current.RemainingDuration.TotalSeconds;
+                        _diagnostics.RecordCustom(
+                            "M74TimerTestD_45s_DuringFullScreenHidden",
+                            $"Context={_awarenessCoordinator.CurrentSnapshot.Context}, MascotVisible={Visibility == Visibility.Visible}, StopwatchElapsed={elapsedSec:F3}s, EngineRemaining={rem45:F3}s, Display={CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration)}");
+
+                        await Task.Delay(3000); // Stay hidden in FullScreen for 3 real seconds while timer continues ticking
+                        var restoreTime = DateTimeOffset.UtcNow;
+                        _awarenessCoordinator.EvaluateSyntheticObservation(normalObs, TimeSpan.Zero, false, false, restoreTime);
+                        _awarenessCoordinator.EvaluateSyntheticObservation(normalObs, TimeSpan.Zero, false, false, restoreTime.AddMilliseconds(800));
+                        _awarenessCoordinator.NotifyPointerEnteredMascot(DateTimeOffset.UtcNow);
+                    }
+                }
+
+                swTestA.Stop();
+                double actualElapsedA = swTestA.Elapsed.TotalSeconds;
+                double errorSecA = actualElapsedA - 60.0;
+                _diagnostics.RecordCustom(
+                    "M74TimerTestA_Completed",
+                    $"Expected=60.000s, ActualStopwatch={actualElapsedA:F3}s, Error={errorSecA:+0.000;-0.000;0.000}s, FinalState={_timerEngine.Current.State}, FinalDisplay={CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration)}");
+
+                // --- TEST F: Real-Time Pause & Resume (3s run -> 2.5s pause -> resume) ---
+                var swTestF = Stopwatch.StartNew();
+                _ = _timerEngine.Start(TimeSpan.FromSeconds(10), "Test F Pause/Resume", DateTimeOffset.UtcNow);
+                await Task.Delay(2000); // Run for ~2.0s
+                double runBeforePauseSec = swTestF.Elapsed.TotalSeconds;
+                var pausedSnap = _timerEngine.Pause(DateTimeOffset.UtcNow);
+                double remAtPause = pausedSnap.RemainingDuration.TotalSeconds;
+
+                var swPauseWait = Stopwatch.StartNew();
+                await Task.Delay(2500); // Wait 2.5s while paused
+                swPauseWait.Stop();
+                double remAfterPauseWait = _timerEngine.Current.RemainingDuration.TotalSeconds;
+
+                var resumedSnap = _timerEngine.Resume(DateTimeOffset.UtcNow);
+                await Task.Delay(1000); // Run 1.0s more after resume
+                _timerEngine.EvaluateTick(DateTimeOffset.UtcNow);
+                double remAfter1sResume = _timerEngine.Current.RemainingDuration.TotalSeconds;
+                _diagnostics.RecordCustom(
+                    "M74TimerTestF_PauseResume",
+                    $"RunBeforePause={runBeforePauseSec:F3}s, RemAtPause={remAtPause:F3}s, PausedDuration={swPauseWait.Elapsed.TotalSeconds:F3}s, RemAfterWait={remAfterPauseWait:F3}s (DeductedDuringPause={(remAtPause - remAfterPauseWait):F4}s), RemAfter1sResume={remAfter1sResume:F3}s");
+
+                // --- TEST B & E: 5-Minute Countdown Checkpoints + SQLite Restart Recovery ---
+                var t5m = DateTimeOffset.UtcNow;
+                var snap5m = _timerEngine.Start(TimeSpan.FromMinutes(5), "5-Minute Deep Focus", t5m);
+                _productivityRepository.SaveTimerSnapshot(snap5m);
+                string disp5m0 = CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration);
+
+                await Task.Delay(2000); // Wait 2 real seconds and simulate app close + reopen from SQLite
+                var reloadedSnap = _productivityRepository.LoadTimerSnapshot();
+                var recoveredEngine = new CountdownTimerEngine(reloadedSnap, DateTimeOffset.UtcNow);
+                double recoveredRemSec = recoveredEngine.Current.RemainingDuration.TotalSeconds;
+
+                // Evaluate intermediate 5-minute checkpoints (60s, 120s, 180s, 240s, 300s)
+                _ = _timerEngine.EvaluateTick(t5m.AddSeconds(60));
+                string disp5m60 = CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration);
+                _ = _timerEngine.EvaluateTick(t5m.AddSeconds(180));
+                string disp5m180 = CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.RemainingDuration);
+                _diagnostics.RecordCustom(
+                    "M74TimerTestBE_5MinAndRestartRecovery",
+                    $"StartDisplay={disp5m0}, RecoveredAfter2s={recoveredRemSec:F2}s ({CountdownTimerEngine.FormatDisplayClock(recoveredEngine.Current.RemainingDuration)}), At60s={disp5m60}, At180s={disp5m180}");
+
+                // Capture updated Tasks & Timer panel screenshot showing accurate 05:00 / 04:58 formatting
+                _ = _timerEngine.Start(TimeSpan.FromMinutes(15), "Focus Sprint", DateTimeOffset.UtcNow);
+                _productivityRepository.SaveTimerSnapshot(_timerEngine.Current);
+                _demoPanelWindow?.RefreshTasksAndTimerUi();
+                await Task.Delay(250);
+                await CaptureM51SceneAsync(outDir, "m74_06_accurate_timer_workspace.png", BackdropKind.DarkSapphire, includePanel: true, includeMascot: true, includeSettings: false, includeToast: false);
+            }
+
+            var procEnd = Process.GetCurrentProcess();
+            _diagnostics.RecordCustom(
+                "M74VerifyComplete",
+                $"WorkingSet={procEnd.WorkingSet64 / (1024.0 * 1024.0):F1}MB, ManagedHeap={GC.GetTotalMemory(false) / (1024.0 * 1024.0):F2}MB, TotalCpuMs={procEnd.TotalProcessorTime.TotalMilliseconds:F0}ms");
+        }
+        finally
+        {
+            System.Windows.Application.Current.Shutdown();
+        }
+    }
+
+    private static void CaptureLegacyToastReferenceImage(string outDir, string fileName)
+    {
+        try
+        {
+            const int w = 420;
+            const int h = 220;
+            using var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var g = Graphics.FromImage(bmp);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+            DrawBackdropPattern(g, w, h, BackdropKind.DesktopWindowsBehind);
+
+            // Render legacy Milestone 4 #toast-preview 196px single-line pill for before/after comparison
+            var pillRect = new System.Drawing.Rectangle(112, 82, 196, 26);
+            using var pillBg = new SolidBrush(System.Drawing.Color.FromArgb(224, 15, 23, 42));
+            using var pillBorder = new System.Drawing.Pen(System.Drawing.Color.FromArgb(140, 56, 189, 248), 1f);
+            using var textBrush = new SolidBrush(System.Drawing.Color.FromArgb(248, 250, 252));
+            using var labelBrush = new SolidBrush(System.Drawing.Color.FromArgb(180, 148, 163, 184));
+            using var font = new Font("Segoe UI", 8.5f, System.Drawing.FontStyle.Bold);
+            using var labelFont = new Font("Segoe UI", 8.5f, System.Drawing.FontStyle.Regular);
+
+            g.FillRectangle(pillBg, pillRect);
+            g.DrawRectangle(pillBorder, pillRect);
+            g.DrawString("Outlook Calendar: Design Sync...", font, textBrush, 120, 88);
+            g.DrawString("Before (M4–M7): Single-line 196px HTML overlay pill inside WebView", labelFont, labelBrush, 36, 134);
+
+            bmp.Save(Path.Combine(outDir, fileName), ImageFormat.Png);
+        }
+        catch
+        {
+        }
+    }
+
     private enum BackdropKind
     {
         BrightDaylight,
@@ -1132,7 +1653,8 @@ public partial class MascotWindow : Window
         BackdropKind backdropKind,
         bool includePanel,
         bool includeMascot,
-        bool includeSettings)
+        bool includeSettings,
+        bool includeToast = false)
     {
         try
         {
@@ -1156,6 +1678,12 @@ public partial class MascotWindow : Window
                 panelBmp = RenderWpfWindowToBitmap(_demoPanelWindow);
             }
 
+            Bitmap? toastBmp = null;
+            if (includeToast && _toastBubbleWindow is { IsVisible: true })
+            {
+                toastBmp = RenderWpfWindowToBitmap(_toastBubbleWindow);
+            }
+
             Bitmap? settingsBmp = null;
             if (includeSettings && _settingsWindow is { IsVisible: true })
             {
@@ -1173,16 +1701,16 @@ public partial class MascotWindow : Window
             }
             else
             {
-                int pw = panelBmp?.Width ?? 0;
-                int ph = panelBmp?.Height ?? 0;
+                int leftCardW = toastBmp?.Width ?? panelBmp?.Width ?? 0;
+                int leftCardH = toastBmp?.Height ?? panelBmp?.Height ?? 0;
                 int mw = mascotBmp?.Width ?? 0;
                 int mh = mascotBmp?.Height ?? 0;
-                contentW = pw + (pw > 0 && mw > 0 ? 18 : 0) + mw;
-                contentH = Math.Max(ph, mh);
+                contentW = leftCardW + (leftCardW > 0 && mw > 0 ? 14 : 0) + mw;
+                contentH = Math.Max(leftCardH, mh);
             }
 
             int totalW = Math.Max(320, contentW + pad * 2);
-            int totalH = Math.Max(320, contentH + pad * 2);
+            int totalH = Math.Max(260, contentH + pad * 2);
 
             using var composite = new Bitmap(totalW, totalH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(composite))
@@ -1198,7 +1726,14 @@ public partial class MascotWindow : Window
                 else
                 {
                     int curX = pad;
-                    if (panelBmp is not null)
+                    if (toastBmp is not null)
+                    {
+                        int ty = pad + Math.Max(0, (contentH - toastBmp.Height) / 3);
+                        BlurBackdropRegion(composite, new System.Drawing.Rectangle(curX + 8, ty + 8, Math.Max(4, toastBmp.Width - 16), Math.Max(4, toastBmp.Height - 18)), radius: 12);
+                        g.DrawImage(toastBmp, curX, ty, toastBmp.Width, toastBmp.Height);
+                        curX += toastBmp.Width + 14;
+                    }
+                    else if (panelBmp is not null)
                     {
                         BlurBackdropRegion(composite, new System.Drawing.Rectangle(curX, pad, panelBmp.Width, panelBmp.Height), radius: 12);
                         g.DrawImage(panelBmp, curX, pad, panelBmp.Width, panelBmp.Height);
@@ -1215,6 +1750,7 @@ public partial class MascotWindow : Window
             composite.Save(Path.Combine(outDir, fileName), ImageFormat.Png);
             mascotBmp?.Dispose();
             panelBmp?.Dispose();
+            toastBmp?.Dispose();
             settingsBmp?.Dispose();
         }
         catch (Exception ex)
@@ -1401,6 +1937,19 @@ public partial class MascotWindow : Window
 
     private void OnCompanionTimerTick(object? sender, EventArgs e)
     {
+        // 0. ~4 Hz (every 8 ticks * 33ms ≈ 264ms) countdown timer evaluation (continues even if mascot is hidden by FullScreen)
+        _timerTickCounter++;
+        if (_timerTickCounter >= 8)
+        {
+            _timerTickCounter = 0;
+            EvaluateProductivityTimersAndReminders(DateTimeOffset.UtcNow, isStartupRecovery: false);
+        }
+
+        if (_isHiddenByAwareness)
+        {
+            return;
+        }
+
         // 1. Periodic 1 Hz autonomous behaviour & notification batch evaluation
         _autonomyTickCounter++;
         if (_autonomyTickCounter >= 30)
@@ -1425,6 +1974,17 @@ public partial class MascotWindow : Window
                 }
                 else
                 {
+                    // M6.1: If Bloop is sleeping and a notification batch is ready, evaluate priority notification wake once per batch
+                    if (_awarenessCoordinator.CurrentPolicy.ShouldEnterSleepMode &&
+                        _notificationReactionScheduler.PendingBatchCount > 0)
+                    {
+                        var batchHighest = _notificationReactionScheduler.GetPendingBatchHighestImportance();
+                        _ = _awarenessCoordinator.TryRequestNotificationWake(
+                            batchHighest,
+                            _notificationReactionScheduler.PendingBatchCount,
+                            $"PriorityNotificationBatch({batchHighest})");
+                    }
+
                     // Evaluate pending 3-second notification batch
                     var reactionDecision = _notificationReactionScheduler.EvaluatePendingBatch(
                         nowUtc,
@@ -1482,6 +2042,13 @@ public partial class MascotWindow : Window
         double cursorDipX = pt.X / scaleX;
         double cursorDipY = pt.Y / scaleY;
 
+        bool insideMascotSphere = IsCursorInsideMascotHitSphere(cursorDipX, cursorDipY);
+        if (insideMascotSphere && !_wasPointerInsideMascotSphere)
+        {
+            _awarenessCoordinator.NotifyPointerEnteredMascot(DateTimeOffset.UtcNow);
+        }
+        _wasPointerInsideMascotSphere = insideMascotSphere;
+
         var workAreaForCursor = _windowService.GetWorkAreaForWindow(this);
         _behaviourScheduler.NotifyUserActivity(
             DateTimeOffset.UtcNow,
@@ -1489,7 +2056,8 @@ public partial class MascotWindow : Window
             cursorDipY,
             Width,
             Height,
-            workAreaForCursor
+            workAreaForCursor,
+            isInsideMascot: insideMascotSphere
         );
 
         double centerDipX = Left + (Width * 0.5);
@@ -1502,6 +2070,54 @@ public partial class MascotWindow : Window
                       cursorDipY >= Top && cursorDipY <= Top + Height;
 
         _webViewService.SendMessage("host:cursor_position", new HostCursorPayload(normX, normY, inside));
+    }
+
+    private bool IsCursorInsideMascotHitSphere(double cursorDipX, double cursorDipY)
+    {
+        if (_isHiddenByAwareness || Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        // Exclude companion panel, settings window, and toast bubble bounds so hovering them never triggers mascot wake
+        if (_demoPanelWindow is { IsVisible: true } &&
+            cursorDipX >= _demoPanelWindow.Left && cursorDipX <= _demoPanelWindow.Left + _demoPanelWindow.ActualWidth &&
+            cursorDipY >= _demoPanelWindow.Top && cursorDipY <= _demoPanelWindow.Top + _demoPanelWindow.ActualHeight)
+        {
+            return false;
+        }
+
+        if (_settingsWindow is { IsVisible: true } &&
+            cursorDipX >= _settingsWindow.Left && cursorDipX <= _settingsWindow.Left + _settingsWindow.ActualWidth &&
+            cursorDipY >= _settingsWindow.Top && cursorDipY <= _settingsWindow.Top + _settingsWindow.ActualHeight)
+        {
+            return false;
+        }
+
+        if (_toastBubbleWindow is { IsVisible: true } &&
+            cursorDipX >= _toastBubbleWindow.Left && cursorDipX <= _toastBubbleWindow.Left + _toastBubbleWindow.ActualWidth &&
+            cursorDipY >= _toastBubbleWindow.Top && cursorDipY <= _toastBubbleWindow.Top + _toastBubbleWindow.ActualHeight)
+        {
+            return false;
+        }
+
+        if (cursorDipX < Left || cursorDipX > Left + Width ||
+            cursorDipY < Top || cursorDipY > Top + Height)
+        {
+            return false;
+        }
+
+        var (offsetX, offsetY) = MovementController.CalculateViewportOffset(
+            _movement.CurrentEdge,
+            _movement.Settings.DockedVisibleRatio);
+        double pixelPerWorldUnit = Width / 4.2;
+        double sphereCenterDipX = Left + Width * 0.5 + offsetX * pixelPerWorldUnit;
+        double sphereCenterDipY = Top + Height * 0.5 - offsetY * pixelPerWorldUnit;
+        double hitRadiusDip = Width * 0.36;
+
+        double dx = cursorDipX - sphereCenterDipX;
+        double dy = cursorDipY - sphereCenterDipY;
+        return (dx * dx + dy * dy) <= (hitRadiusDip * hitRadiusDip);
     }
 
     private void OnEdgeCandidateChanged(object? sender, DockingEdge candidateEdge)
@@ -1639,8 +2255,14 @@ public partial class MascotWindow : Window
     {
         switch (msg.Type)
         {
+            case "pointer:hover_enter":
+            {
+                _awarenessCoordinator.NotifyPointerEnteredMascot(DateTimeOffset.UtcNow);
+                break;
+            }
             case "pointer:drag_start":
             {
+                _awarenessCoordinator.NotifyPointerEnteredMascot(DateTimeOffset.UtcNow);
                 var payload = msg.Payload.Deserialize<PointerCoordinatesPayload>();
                 if (payload is null) break;
                 CancelActiveHop("UserDragStart", notifyController: false);
@@ -1819,16 +2441,67 @@ public partial class MascotWindow : Window
                 "NotificationReaction",
                 $"SubtleEdgeGlance (Batch={decision.BatchCount}, Importance={decision.HighestImportance}, Unread={decision.UnreadCount})");
         }
+
+        ShowLiquidGlassToastBubble(decision);
+    }
+
+    private void ShowLiquidGlassToastBubble(NotificationReactionDecision decision)
+    {
+        if (_isHiddenByAwareness || Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _toastBubbleWindow ??= new ToastBubbleWindow(
+            this,
+            _windowService,
+            _diagnostics,
+            () =>
+            {
+                if (_demoPanelWindow is null || !_demoPanelWindow.IsVisible)
+                {
+                    ToggleDemoPanel();
+                }
+            });
+
+        _toastBubbleWindow.ShowToast(
+            decision,
+            _currentAppearanceProfile.Character,
+            _currentAppearanceProfile.Panel);
     }
 
     private void ToggleDemoPanel()
     {
         if (_demoPanelWindow is not null && _demoPanelWindow.IsVisible)
         {
+            _demoPanelWindow.FlushActiveNoteAutoSave();
             _demoPanelWindow.Hide();
             return;
         }
 
+        EnsureDemoPanelWindowCreated();
+        PositionDemoPanelRelativeToMascot();
+        _demoPanelWindow!.Show();
+        _demoPanelWindow.ApplyAppearance(_currentAppearanceProfile.Panel, _currentAppearanceProfile.Character);
+        _demoPanelWindow.UpdateAwarenessStatus(_awarenessCoordinator.FormatDiagnosticsSummary());
+        _notificationCoordinator.NotifyPanelOpened();
+    }
+
+    public void OpenWorkspacePanelSubTab(int subTabIndex)
+    {
+        EnsureDemoPanelWindowCreated();
+        PositionDemoPanelRelativeToMascot();
+        if (!_demoPanelWindow!.IsVisible)
+        {
+            _demoPanelWindow.Show();
+        }
+        _demoPanelWindow.ApplyAppearance(_currentAppearanceProfile.Panel, _currentAppearanceProfile.Character);
+        _demoPanelWindow.UpdateAwarenessStatus(_awarenessCoordinator.FormatDiagnosticsSummary());
+        _demoPanelWindow.ShowWorkspaceSubTab(subTabIndex);
+    }
+
+    private void EnsureDemoPanelWindowCreated()
+    {
         _demoPanelWindow ??= new NotificationWindow(
             this,
             _windowService,
@@ -1838,19 +2511,95 @@ public partial class MascotWindow : Window
             _diagnostics,
             () => TriggerDevAutonomousHop(false),
             TriggerManualPeekaboo,
-            SendUnreadBadgeToRenderer
+            SendUnreadBadgeToRenderer,
+            _launcherService,
+            _productivityRepository,
+            _timerEngine
         );
-        PositionDemoPanelRelativeToMascot();
-        _demoPanelWindow.Show();
-        _demoPanelWindow.ApplyAppearance(_currentAppearanceProfile.Panel, _currentAppearanceProfile.Character);
-        _demoPanelWindow.UpdateAwarenessStatus(_awarenessCoordinator.FormatDiagnosticsSummary());
-        _notificationCoordinator.NotifyPanelOpened();
+    }
+
+    private void EvaluateProductivityTimersAndReminders(DateTimeOffset nowUtc, bool isStartupRecovery)
+    {
+        if (_timerEngine is not null && _productivityRepository is not null)
+        {
+            bool timerJustFinished = _timerEngine.EvaluateTick(nowUtc);
+            if (timerJustFinished)
+            {
+                _productivityRepository.SaveTimerSnapshot(_timerEngine.Current);
+                DispatchLocalProductivityNotification(
+                    id: $"timer-done-{nowUtc.ToUnixTimeMilliseconds()}",
+                    sourceApp: "Bloop Timer",
+                    title: $"Timer Complete: {_timerEngine.Current.Label}",
+                    body: $"Completed {CountdownTimerEngine.FormatDisplayClock(_timerEngine.Current.TotalDuration)} countdown.",
+                    importance: NotificationImportance.High,
+                    nowUtc: nowUtc);
+                _demoPanelWindow?.RefreshTasksAndTimerUi();
+            }
+        }
+
+        if (_reminderScheduler is not null && (isStartupRecovery || (nowUtc - _lastReminderEvalUtc).TotalSeconds >= 0.95))
+        {
+            _lastReminderEvalUtc = nowUtc;
+            var dueReminders = _reminderScheduler.EvaluateDueReminders(nowUtc, isStartupRecovery);
+            if (dueReminders.Count > 0)
+            {
+                foreach (var dec in dueReminders)
+                {
+                    var imp = dec.IsPriorityAlert ? NotificationImportance.High : NotificationImportance.Normal;
+                    string prefix = dec.IsMissedRecovery ? "Missed Reminder: " : "Reminder: ";
+                    DispatchLocalProductivityNotification(
+                        id: $"rem-alert-{dec.Reminder.Id}",
+                        sourceApp: "Bloop Reminders",
+                        title: $"{prefix}{dec.Reminder.Title}",
+                        body: $"Scheduled for {dec.Reminder.TriggerAtUtc.ToLocalTime():HH:mm}",
+                        importance: imp,
+                        nowUtc: nowUtc);
+                }
+                _demoPanelWindow?.RefreshTasksAndTimerUi();
+            }
+        }
+    }
+
+    private void DispatchLocalProductivityNotification(
+        string id,
+        string sourceApp,
+        string title,
+        string body,
+        NotificationImportance importance,
+        DateTimeOffset nowUtc)
+    {
+        var item = new NotificationItem
+        {
+            Id = id,
+            OsNotificationId = 0,
+            Source = new NotificationSource("Bloop.Productivity", sourceApp),
+            Title = title,
+            Body = body,
+            CreatedAtUtc = nowUtc,
+            ReceivedAtUtc = nowUtc,
+            IsPresentInOs = false,
+            Importance = importance,
+            HasExplicitUrgencyHint = importance >= NotificationImportance.High
+        };
+
+        _notificationReactionScheduler.EnqueueNewNotifications([item], nowUtc, _notificationCoordinator.Settings);
+
+        if (_awarenessCoordinator.CurrentPolicy.ShouldEnterSleepMode && importance >= NotificationImportance.High)
+        {
+            _ = _awarenessCoordinator.TryRequestNotificationWake(importance, 1, sourceApp);
+        }
     }
 
     private void PositionDemoPanelRelativeToMascot()
     {
-        if (_demoPanelWindow is null || !_demoPanelWindow.IsVisible) return;
-        _demoPanelWindow.PositionBesideMascotIfAttached();
+        if (_demoPanelWindow is { IsVisible: true })
+        {
+            _demoPanelWindow.PositionBesideMascotIfAttached();
+        }
+        if (_toastBubbleWindow is { IsVisible: true })
+        {
+            _toastBubbleWindow.PositionBesideMascot();
+        }
     }
 
     private void ShowSettingsWindow()
@@ -1883,7 +2632,13 @@ public partial class MascotWindow : Window
         _awarenessCoordinator.StateChanged -= OnAwarenessStateChanged;
         CancelActiveHop("ApplicationShutdown");
         _companionTimer.Stop();
+        _demoPanelWindow?.FlushActiveNoteAutoSave();
+        if (_timerEngine is not null && _productivityRepository is not null)
+        {
+            _productivityRepository.SaveTimerSnapshot(_timerEngine.Current);
+        }
         _awarenessCoordinator.Dispose();
+        _toastBubbleWindow?.Close();
         _demoPanelWindow?.Close();
         _settingsWindow?.Close();
         _webViewService.Dispose();

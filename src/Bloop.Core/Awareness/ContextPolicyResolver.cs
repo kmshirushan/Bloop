@@ -2,6 +2,7 @@ namespace Bloop.Core.Awareness;
 
 /// <summary>
 /// Central, deterministic desktop context classifier, full-screen hysteresis tracker,
+/// M6.1 Intelligent Sleep controller (mouse-only countdown, hover-only / priority-notification wake),
 /// and 8-level policy precedence resolver.
 /// </summary>
 public sealed class ContextPolicyResolver : IContextPolicyResolver
@@ -19,18 +20,114 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
     private DateTimeOffset? _fullScreenClearedSinceUtc;
     private bool _isConfirmedFullScreen;
 
+    // M6.1 Intelligent Sleep latch: once true, desktop mouse movement outside Bloop CANNOT clear it.
+    private bool _isIntelligentSleeping;
+    private DateTimeOffset _lastWakeOrResetUtc = DateTimeOffset.MinValue;
+    private string? _lastSleepSuppressionReason;
+
     private DesktopContext _previousContext = DesktopContext.Unknown;
     private UserInactivityState _previousInactivityState = UserInactivityState.Active;
     private bool _previousSessionLocked;
     private bool _previousSystemSuspended;
     private string _previousPolicyReason = string.Empty;
 
+    public bool IsSleeping => _isIntelligentSleeping;
+
     public void ResetState(DateTimeOffset nowUtc)
     {
         _fullScreenCandidateSinceUtc = null;
         _fullScreenClearedSinceUtc = null;
         _isConfirmedFullScreen = false;
+        _isIntelligentSleeping = false;
+        _lastWakeOrResetUtc = nowUtc;
         _currentForegroundEnteredAtUtc = nowUtc;
+    }
+
+    public bool TryWakeFromPointerEntry(DateTimeOffset nowUtc, out AwarenessDiagnosticEvent? wakeEvent)
+    {
+        _lastWakeOrResetUtc = nowUtc;
+        if (!_isIntelligentSleeping)
+        {
+            wakeEvent = null;
+            return false;
+        }
+
+        _isIntelligentSleeping = false;
+        _previousContext = DesktopContext.Normal;
+        _previousInactivityState = UserInactivityState.Active;
+
+        wakeEvent = new AwarenessDiagnosticEvent(
+            "SleepExited",
+            "Pointer entered mascot hit area — waking Bloop and resetting mouse inactivity countdown",
+            DesktopContext.Normal,
+            _lastExternalProcessName,
+            1.0,
+            "PointerEnteredMascot",
+            nowUtc);
+        return true;
+    }
+
+    public bool TryWakeFromPriorityNotification(
+        string sourceSummary,
+        AwarenessSettings rawSettings,
+        bool globalBehavioursPaused,
+        out AwarenessDiagnosticEvent? wakeEvent,
+        DateTimeOffset? timestampUtc = null)
+    {
+        var nowUtc = timestampUtc ?? DateTimeOffset.UtcNow;
+        var settings = AwarenessValidator.Normalize(rawSettings);
+
+        if (!_isIntelligentSleeping)
+        {
+            wakeEvent = null;
+            return false;
+        }
+
+        if (_previousSystemSuspended || _previousSessionLocked || _isConfirmedFullScreen || globalBehavioursPaused)
+        {
+            string blockReason = _previousSystemSuspended ? "SystemSuspended"
+                : _previousSessionLocked ? "SessionLocked"
+                : _isConfirmedFullScreen ? "FullScreenHidden"
+                : "GlobalPause";
+
+            wakeEvent = new AwarenessDiagnosticEvent(
+                "NotificationWakeRejected",
+                $"Priority notification wake rejected due to higher-priority state: {blockReason}",
+                _previousContext,
+                _lastExternalProcessName,
+                1.0,
+                blockReason,
+                nowUtc);
+            return false;
+        }
+
+        if (!settings.PriorityNotificationWakeEnabled)
+        {
+            wakeEvent = new AwarenessDiagnosticEvent(
+                "NotificationWakeRejected",
+                $"Priority notification wake disabled in settings ({sourceSummary})",
+                DesktopContext.Sleeping,
+                _lastExternalProcessName,
+                1.0,
+                "PriorityNotificationWakeDisabled",
+                nowUtc);
+            return false;
+        }
+
+        _isIntelligentSleeping = false;
+        _lastWakeOrResetUtc = nowUtc;
+        _previousContext = DesktopContext.Normal;
+        _previousInactivityState = UserInactivityState.Active;
+
+        wakeEvent = new AwarenessDiagnosticEvent(
+            "NotificationWakeAccepted",
+            $"Priority notification woke Bloop ({sourceSummary}); mouse inactivity timer restarted",
+            DesktopContext.Normal,
+            _lastExternalProcessName,
+            1.0,
+            "PriorityNotificationWake",
+            nowUtc);
+        return true;
     }
 
     public static bool IsFullScreenWindowCandidate(
@@ -99,12 +196,6 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             return false;
         }
 
-        // Critical safeguard: distinguish a normal maximized window from a genuine full-screen window.
-        // 1. When the monitor has a visible taskbar, a normal maximized window only covers WorkArea (rcWork),
-        //    so reaching here (covering rcMonitor) already proves it is covering the taskbar (full-screen).
-        // 2. When the taskbar is auto-hidden (rcMonitor == rcWork), a standard maximized window has
-        //    IsMaximized=true AND HasCaptionOrThickFrame=true. Exclude it so maximized editors/browsers
-        //    never trigger full-screen hiding.
         if (obs.IsMaximized && obs.HasCaptionOrThickFrame && !obs.MonitorHasVisibleTaskbar)
         {
             exclusionOrRejectionReason = "MaximizedStandardWindowWithCaption";
@@ -122,12 +213,19 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
         bool isSystemSuspended,
         AwarenessSettings rawSettings,
         bool globalBehavioursPaused,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        TimeSpan? mouseIdleDuration = null,
+        bool mouseMovedOnDesktop = false)
     {
         var settings = AwarenessValidator.Normalize(rawSettings);
         var events = new List<AwarenessDiagnosticEvent>();
 
-        // 1. Update foreground application tracking (preserving last external app when Bloop's own UI is clicked)
+        if (_lastWakeOrResetUtc == DateTimeOffset.MinValue)
+        {
+            _lastWakeOrResetUtc = nowUtc;
+        }
+
+        // 1. Update foreground application tracking
         if (observation.IsValidExternalWindow && !observation.IsBloopOwnedWindow && !observation.IsShellOrDesktopSurface)
         {
             var procKey = AwarenessValidator.NormalizeProcessKey(observation.ProcessName);
@@ -144,7 +242,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
                 events.Add(new AwarenessDiagnosticEvent(
                     "ForegroundApplicationChanged",
                     $"Foreground app: {_lastExternalProcessName ?? "unknown"} on {observation.MonitorId}",
-                     _previousContext,
+                    _previousContext,
                     _lastExternalProcessName,
                     1.0,
                     _previousPolicyReason,
@@ -161,7 +259,6 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
         }
         else if (observation.IsShellOrDesktopSurface)
         {
-            // Focusing the Windows desktop / taskbar clears full-screen candidate state
             _lastExternalIsRawFullScreen = false;
             _lastExternalIsMaximized = false;
         }
@@ -177,27 +274,11 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             fgStableDuration = TimeSpan.Zero;
         }
 
-        // 2. Evaluate Full-Screen Hysteresis (Enter delay vs Restore delay)
+        // 2. Evaluate Full-Screen Hysteresis
         bool isCandidateFullScreen = settings.IsEnabled && settings.FullScreenDetectionEnabled && _lastExternalIsRawFullScreen;
         UpdateFullScreenHysteresis(isCandidateFullScreen, settings, nowUtc, events);
 
-        // 3. Evaluate User Inactivity State (Active / Quiet / Away / Sleeping) + Manual Override
-        var idleDuration = rawIdleDuration < TimeSpan.Zero ? TimeSpan.Zero : rawIdleDuration;
-        var inactivityState = ClassifyInactivityState(idleDuration, settings);
-        if (inactivityState != _previousInactivityState)
-        {
-            _previousInactivityState = inactivityState;
-            events.Add(new AwarenessDiagnosticEvent(
-                "IdleStateChanged",
-                $"User inactivity state -> {inactivityState} (Idle={idleDuration.TotalSeconds:0}s)",
-                _previousContext,
-                _lastExternalProcessName,
-                1.0,
-                _previousPolicyReason,
-                nowUtc));
-        }
-
-        // 4. Session & Power Transitions
+        // 3. Session & Power Transitions
         bool effectiveLocked = settings.IsEnabled && settings.SessionAwarenessEnabled && isSessionLocked;
         bool effectiveSuspended = settings.IsEnabled && settings.PowerAwarenessEnabled && isSystemSuspended;
 
@@ -227,14 +308,45 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
                 nowUtc));
         }
 
-        // 5. Evaluate Manual & Confidence-Based Focus Mode
+        // 4. Evaluate Manual & Confidence-Based Focus Mode
+        var osIdleDuration = rawIdleDuration < TimeSpan.Zero ? TimeSpan.Zero : rawIdleDuration;
+        var effectiveMouseIdle = mouseIdleDuration ?? osIdleDuration;
+        if (effectiveMouseIdle < TimeSpan.Zero)
+        {
+            effectiveMouseIdle = TimeSpan.Zero;
+        }
+
+        // While AWAKE, desktop mouse movement resets the sleep countdown.
+        // Once SLEEPING, desktop mouse movement outside Bloop MUST NOT wake him!
+        if (!_isIntelligentSleeping && mouseMovedOnDesktop)
+        {
+            _lastWakeOrResetUtc = nowUtc;
+            events.Add(new AwarenessDiagnosticEvent(
+                "InactivityCountdownReset",
+                "Mouse activity detected on desktop — sleep countdown reset",
+                _previousContext,
+                _lastExternalProcessName,
+                1.0,
+                _previousPolicyReason,
+                nowUtc));
+        }
+
+        // Also clamp effectiveMouseIdle by time elapsed since last wake (e.g., after pointer-entry wake or notification wake)
+        var elapsedSinceWake = nowUtc - _lastWakeOrResetUtc;
+        if (elapsedSinceWake >= TimeSpan.Zero && mouseIdleDuration.HasValue && elapsedSinceWake < effectiveMouseIdle)
+        {
+            effectiveMouseIdle = elapsedSinceWake;
+        }
+
         bool manualFocusActive = settings.IsEnabled &&
                                  settings.ManualFocusModeEnabled &&
                                  (!settings.ManualFocusExpiresAtUtc.HasValue || nowUtc < settings.ManualFocusExpiresAtUtc.Value);
 
+        // Use OS-wide idle duration (keyboard + mouse) for Focus engagement, but mouse-only idle for Intelligent Sleep
+        bool isUserActivelyEngagedForFocus = osIdleDuration.TotalSeconds < settings.QuietThresholdSeconds;
         double focusConfidence = CalculateAutoFocusConfidence(
             _lastExternalProcessName,
-            inactivityState,
+            isUserActivelyEngagedForFocus ? UserInactivityState.Active : UserInactivityState.Away,
             fgStableDuration,
             _lastExternalIsMaximized,
             _lastExternalWorkAreaCoverageRatio,
@@ -243,10 +355,128 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
         bool autoFocusActive = settings.IsEnabled &&
                                settings.AutoFocusInferenceEnabled &&
                                !_isConfirmedFullScreen &&
-                               inactivityState is UserInactivityState.Active or UserInactivityState.Quiet &&
+                               !_isIntelligentSleeping &&
+                               isUserActivelyEngagedForFocus &&
                                focusConfidence >= settings.AutoFocusConfidenceThreshold;
 
-        // 6. Determine DesktopContext & Confidence
+        // 5. Evaluate M6.1 Intelligent Sleep State & Inactivity Tiers
+        bool higherPriorityBlocksSleep = effectiveSuspended ||
+                                         effectiveLocked ||
+                                         globalBehavioursPaused ||
+                                         _isConfirmedFullScreen ||
+                                         manualFocusActive ||
+                                         autoFocusActive;
+
+        if (settings.ManualIdleOverride == ManualIdleOverride.ForceAwake)
+        {
+            if (_isIntelligentSleeping)
+            {
+                _isIntelligentSleeping = false;
+                _lastWakeOrResetUtc = nowUtc;
+                events.Add(new AwarenessDiagnosticEvent(
+                    "SleepExited",
+                    "Exited sleep via Manual ForceAwake override",
+                    DesktopContext.Normal,
+                    _lastExternalProcessName,
+                    1.0,
+                    "ManualForceAwake",
+                    nowUtc));
+            }
+        }
+        else if (settings.ManualIdleOverride == ManualIdleOverride.ForceSleep)
+        {
+            if (!_isIntelligentSleeping)
+            {
+                _isIntelligentSleeping = true;
+                events.Add(new AwarenessDiagnosticEvent(
+                    "SleepEntered",
+                    "Entered sleep via Manual ForceSleep override",
+                    DesktopContext.Sleeping,
+                    _lastExternalProcessName,
+                    1.0,
+                    "ManualForceSleep",
+                    nowUtc));
+            }
+        }
+        else if (!settings.IsEnabled || !settings.InactivityDetectionEnabled || !settings.AutoSleepEnabled)
+        {
+            if (_isIntelligentSleeping)
+            {
+                _isIntelligentSleeping = false;
+                _lastWakeOrResetUtc = nowUtc;
+            }
+        }
+        else if (!_isIntelligentSleeping)
+        {
+            // Check if mouse inactivity has reached SleepAfterSeconds (default 30s) or SleepThresholdSeconds
+            double effectiveSleepThresholdSec = mouseIdleDuration.HasValue
+                ? settings.SleepAfterSeconds
+                : settings.SleepThresholdSeconds;
+
+            if (effectiveMouseIdle.TotalSeconds >= effectiveSleepThresholdSec)
+            {
+                if (higherPriorityBlocksSleep)
+                {
+                    string supReason = effectiveSuspended ? "SystemSuspended"
+                        : effectiveLocked ? "SessionLocked"
+                        : globalBehavioursPaused ? "GlobalPause"
+                        : _isConfirmedFullScreen ? "FullScreen"
+                        : "FocusMode";
+
+                    if (_lastSleepSuppressionReason != supReason)
+                    {
+                        _lastSleepSuppressionReason = supReason;
+                        events.Add(new AwarenessDiagnosticEvent(
+                            "SleepSuppressedByHigherPriorityState",
+                            $"Mouse idle reached {effectiveMouseIdle.TotalSeconds:0}s, but sleep suppressed by {supReason}",
+                            _previousContext,
+                            _lastExternalProcessName,
+                            1.0,
+                            supReason,
+                            nowUtc));
+                    }
+                }
+                else
+                {
+                    _isIntelligentSleeping = true;
+                    _lastSleepSuppressionReason = null;
+                    events.Add(new AwarenessDiagnosticEvent(
+                        "SleepEntered",
+                        $"Entered Intelligent Sleep after {effectiveMouseIdle.TotalSeconds:0}s of mouse inactivity",
+                        DesktopContext.Sleeping,
+                        _lastExternalProcessName,
+                        0.98,
+                        "IntelligentSleep",
+                        nowUtc));
+                }
+            }
+            else
+            {
+                _lastSleepSuppressionReason = null;
+            }
+        }
+
+        var inactivityState = ClassifyInactivityState(
+            effectiveMouseIdle,
+            settings,
+            _isIntelligentSleeping,
+            mouseIdleDuration.HasValue,
+            higherPriorityBlocksSleep);
+
+        if (inactivityState != _previousInactivityState)
+        {
+            _previousInactivityState = inactivityState;
+            events.Add(new AwarenessDiagnosticEvent(
+                "IdleStateChanged",
+                $"User inactivity state -> {inactivityState} (MouseIdle={effectiveMouseIdle.TotalSeconds:0}s)",
+                _previousContext,
+                _lastExternalProcessName,
+                1.0,
+                _previousPolicyReason,
+                nowUtc));
+        }
+
+        // 6. Determine DesktopContext & Confidence (8-Level Precedence)
         DesktopContext context;
         double confidence;
 
@@ -275,15 +505,20 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             context = DesktopContext.Focus;
             confidence = 1.0;
         }
-        else if (inactivityState is UserInactivityState.Away or UserInactivityState.Sleeping)
-        {
-            context = DesktopContext.Away;
-            confidence = 0.95;
-        }
         else if (autoFocusActive)
         {
             context = DesktopContext.Focus;
             confidence = focusConfidence;
+        }
+        else if (_isIntelligentSleeping || inactivityState == UserInactivityState.Sleeping)
+        {
+            context = DesktopContext.Sleeping;
+            confidence = 0.98;
+        }
+        else if (inactivityState == UserInactivityState.Away)
+        {
+            context = DesktopContext.Away;
+            confidence = 0.95;
         }
         else
         {
@@ -321,7 +556,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             _previousContext = context;
         }
 
-        // 7. Resolve Central AwarenessPolicy (8-Level Mandatory Precedence)
+        // 7. Resolve Central AwarenessPolicy
         var policy = ResolvePolicy(
             context,
             inactivityState,
@@ -331,6 +566,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             _isConfirmedFullScreen,
             manualFocusActive,
             autoFocusActive,
+            _isIntelligentSleeping,
             focusConfidence,
             settings);
 
@@ -360,7 +596,9 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             IsFullScreen = _isConfirmedFullScreen,
             IsMaximizedWindow = _lastExternalIsMaximized,
             IsUserIdle = inactivityState != UserInactivityState.Active,
-            IdleDuration = idleDuration,
+            IsSleeping = _isIntelligentSleeping || inactivityState == UserInactivityState.Sleeping,
+            IdleDuration = osIdleDuration,
+            MouseIdleDuration = effectiveMouseIdle,
             ForegroundStableDuration = fgStableDuration,
             IsSessionLocked = effectiveLocked,
             IsSystemSuspended = effectiveSuspended,
@@ -423,7 +661,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
                     _fullScreenClearedSinceUtc = null;
                     events.Add(new AwarenessDiagnosticEvent(
                         "FullScreenCleared",
-                        $"Full-screen cleared; restoring desktop context",
+                        "Full-screen cleared; restoring desktop context",
                         DesktopContext.Normal,
                         _lastExternalProcessName,
                         0.95,
@@ -434,15 +672,20 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
         }
     }
 
-    private static UserInactivityState ClassifyInactivityState(TimeSpan idleDuration, AwarenessSettings settings)
+    private static UserInactivityState ClassifyInactivityState(
+        TimeSpan idleDuration,
+        AwarenessSettings settings,
+        bool isIntelligentSleeping,
+        bool isMouseSpecificSample,
+        bool higherPriorityBlocksSleep = false)
     {
         if (settings.ManualIdleOverride == ManualIdleOverride.ForceAwake)
         {
             return UserInactivityState.Active;
         }
-        if (settings.ManualIdleOverride == ManualIdleOverride.ForceSleep)
+        if (settings.ManualIdleOverride == ManualIdleOverride.ForceSleep || isIntelligentSleeping)
         {
-            return UserInactivityState.Sleeping;
+            return higherPriorityBlocksSleep ? UserInactivityState.Quiet : UserInactivityState.Sleeping;
         }
 
         if (!settings.IsEnabled || !settings.InactivityDetectionEnabled)
@@ -451,7 +694,9 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
         }
 
         double sec = idleDuration.TotalSeconds;
-        if (settings.AutoSleepEnabled && sec >= settings.SleepThresholdSeconds)
+        double sleepThreshold = isMouseSpecificSample ? settings.SleepAfterSeconds : settings.SleepThresholdSeconds;
+
+        if (settings.AutoSleepEnabled && sec >= sleepThreshold && !higherPriorityBlocksSleep)
         {
             return UserInactivityState.Sleeping;
         }
@@ -487,7 +732,6 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             }
             if (rule == AppAwarenessBehavior.Focus)
             {
-                // Explicit user Focus rule + active presence + foreground stability
                 double score = 0.55;
                 if (inactivityState == UserInactivityState.Active) score += 0.25;
                 if (fgStableDuration.TotalSeconds >= 10.0) score += 0.15;
@@ -501,7 +745,6 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             return 0.15;
         }
 
-        // Conservative multi-signal score for default focus candidates (never inferred from app name alone)
         double confidence = 0.42;
         if (inactivityState == UserInactivityState.Active)
         {
@@ -532,6 +775,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
         bool isConfirmedFullScreen,
         bool manualFocusActive,
         bool autoFocusActive,
+        bool isIntelligentSleeping,
         double focusConfidence,
         AwarenessSettings settings)
     {
@@ -583,7 +827,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
 
         bool hideForFullScreen = isConfirmedFullScreen && settings.AutoHideOnFullScreen;
 
-        // Precedence 3: Global Pause (preserves system/fullscreen visibility hiding while suspending autonomous behaviours)
+        // Precedence 3: Global Pause
         if (globalBehavioursPaused)
         {
             return new AwarenessPolicy
@@ -646,7 +890,7 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
                 AllowPeekaboo = false,
                 AllowRandomClickReactions = !settings.SuppressRandomClickInFocus,
                 AllowRepeatedClickAnnoyance = false,
-                AllowNotificationReaction = true, // High/Critical respected; ordinary suppressed in NotificationReactionScheduler
+                AllowNotificationReaction = true,
                 AllowCenterScreenEntrance = true,
                 IsQuietMode = true,
                 ShouldEnterSleepMode = false,
@@ -656,12 +900,12 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
             };
         }
 
-        // Precedence 7: User Inactivity (Sleeping / Away / Quiet)
-        if (inactivityState == UserInactivityState.Sleeping)
+        // Precedence 7: Explicit Sleeping State (M6.1 Intelligent Sleep — visible, hover/priority-notification wake only)
+        if (isIntelligentSleeping || inactivityState == UserInactivityState.Sleeping)
         {
             return new AwarenessPolicy
             {
-                ShouldShowMascot = true,
+                ShouldShowMascot = true, // Never SW_HIDE for ordinary sleep!
                 AllowAutonomousMovement = false,
                 AllowIdleAnimations = true,
                 AllowAttentionSeeking = false,
@@ -669,13 +913,13 @@ public sealed class ContextPolicyResolver : IContextPolicyResolver
                 AllowPeekaboo = false,
                 AllowRandomClickReactions = true,
                 AllowRepeatedClickAnnoyance = true,
-                AllowNotificationReaction = true,
-                AllowCenterScreenEntrance = true,
+                AllowNotificationReaction = settings.PriorityNotificationWakeEnabled,
+                AllowCenterScreenEntrance = settings.PriorityNotificationWakeEnabled,
                 IsQuietMode = true,
                 ShouldEnterSleepMode = true,
-                EffectiveContext = DesktopContext.Away,
+                EffectiveContext = DesktopContext.Sleeping,
                 InactivityState = UserInactivityState.Sleeping,
-                Reason = "UserInactivity(Sleeping)"
+                Reason = "IntelligentSleep"
             };
         }
 

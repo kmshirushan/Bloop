@@ -118,6 +118,59 @@ public sealed class DatabaseService : IDisposable
                 ON appearance_profiles (is_active);
             """);
 
+        ApplyMigrationIfNeeded(conn, 4, """
+            CREATE TABLE IF NOT EXISTS productivity_tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 1,
+                due_at_utc TEXT NULL,
+                is_completed INTEGER NOT NULL DEFAULT 0,
+                created_at_utc TEXT NOT NULL,
+                completed_at_utc TEXT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_productivity_tasks_status
+                ON productivity_tasks (is_completed, priority DESC, updated_at_utc DESC);
+
+            CREATE TABLE IF NOT EXISTS productivity_reminders (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NULL,
+                title TEXT NOT NULL,
+                trigger_at_utc TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 1,
+                is_delivered INTEGER NOT NULL DEFAULT 0,
+                delivered_at_utc TEXT NULL,
+                created_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_productivity_reminders_pending
+                ON productivity_reminders (is_delivered, trigger_at_utc ASC);
+
+            CREATE TABLE IF NOT EXISTS productivity_timers (
+                timer_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                total_seconds REAL NOT NULL,
+                remaining_seconds REAL NOT NULL,
+                state INTEGER NOT NULL DEFAULT 0,
+                started_at_utc TEXT NULL,
+                target_end_utc TEXT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS quick_notes (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_quick_notes_updated
+                ON quick_notes (updated_at_utc DESC);
+            """);
+
         using var verCmd = conn.CreateCommand();
         verCmd.CommandText = "SELECT COALESCE(MAX(version), 0) FROM schema_migrations;";
         SchemaVersion = Convert.ToInt32(verCmd.ExecuteScalar());

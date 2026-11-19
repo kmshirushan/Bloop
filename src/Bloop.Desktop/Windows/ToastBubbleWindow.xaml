@@ -1,0 +1,233 @@
+<Window x:Class="Bloop.Desktop.Windows.ToastBubbleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bloop — Liquid Glass Toast"
+        Width="334"
+        SizeToContent="Height"
+        MinHeight="88"
+        MaxHeight="184"
+        WindowStyle="None"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        ShowActivated="False"
+        MouseEnter="OnWindowMouseEnter"
+        MouseLeave="OnWindowMouseLeave">
+    <WindowChrome.WindowChrome>
+        <WindowChrome GlassFrameThickness="-1"
+                      ResizeBorderThickness="0"
+                      CaptionHeight="0"
+                      UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <!-- Root animated container (translate + scale + opacity for organic entrance/exit) -->
+    <Grid x:Name="AnimatedRootGrid"
+          Margin="8,8,8,10"
+          RenderTransformOrigin="0.5,0.5">
+        <Grid.RenderTransform>
+            <TransformGroup>
+                <ScaleTransform x:Name="BubbleScaleTransform" ScaleX="1.0" ScaleY="1.0" />
+                <TranslateTransform x:Name="BubbleTranslateTransform" X="0" Y="0" />
+            </TransformGroup>
+        </Grid.RenderTransform>
+
+        <!-- Soft ambient contact drop shadow behind the capsule -->
+        <Border CornerRadius="22"
+                Background="#22020617"
+                IsHitTestVisible="False">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="16"
+                                  ShadowDepth="4"
+                                  Direction="270"
+                                  Color="#020617"
+                                  Opacity="0.48" />
+            </Border.Effect>
+        </Border>
+
+        <!-- Main Liquid-Glass Capsule Surface (Deep Teal / Blue-Green Translucent Glass) -->
+        <Border x:Name="CapsuleSurfaceBorder"
+                CornerRadius="22"
+                BorderThickness="1.2"
+                ClipToBounds="True"
+                MouseLeftButtonUp="OnToastBodyClick"
+                Cursor="Hand">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop x:Name="SurfaceStop0" Color="#E608283A" Offset="0.0" />
+                    <GradientStop x:Name="SurfaceStop1" Color="#DC061D2C" Offset="0.55" />
+                    <GradientStop x:Name="SurfaceStop2" Color="#E8041522" Offset="1.0" />
+                </LinearGradientBrush>
+            </Border.Background>
+            <Border.BorderBrush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop x:Name="RimStop0" Color="#A838BDF8" Offset="0.0" />
+                    <GradientStop x:Name="RimStop1" Color="#4422D3EE" Offset="0.5" />
+                    <GradientStop x:Name="RimStop2" Color="#720284C7" Offset="1.0" />
+                </LinearGradientBrush>
+            </Border.BorderBrush>
+
+            <Grid>
+                <!-- Gentle inner radial refraction highlight (top-left aquatic sheen) -->
+                <Border IsHitTestVisible="False">
+                    <Border.Background>
+                        <RadialGradientBrush GradientOrigin="0.16,0.12" Center="0.22,0.18" RadiusX="0.78" RadiusY="0.72">
+                            <GradientStop x:Name="InnerGlowStop0" Color="#3438BDF8" Offset="0.0" />
+                            <GradientStop Color="#1222D3EE" Offset="0.48" />
+                            <GradientStop Color="#00000000" Offset="1.0" />
+                        </RadialGradientBrush>
+                    </Border.Background>
+                </Border>
+
+                <!-- Restrained 1px top specular catch-light -->
+                <Border Height="1"
+                        VerticalAlignment="Top"
+                        Margin="20,0,20,0"
+                        IsHitTestVisible="False">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                            <GradientStop Color="#00FFFFFF" Offset="0.0" />
+                            <GradientStop x:Name="TopSpecularStop" Color="#8CFFFFFF" Offset="0.32" />
+                            <GradientStop Color="#44E0F2FE" Offset="0.68" />
+                            <GradientStop Color="#00FFFFFF" Offset="1.0" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                </Border>
+
+                <!-- Left luminous priority edge indicator -->
+                <Border x:Name="PriorityLeftAccentBar"
+                        Width="3.5"
+                        HorizontalAlignment="Left"
+                        Margin="0,14,0,14"
+                        CornerRadius="0,3,3,0"
+                        Background="#38BDF8"
+                        IsHitTestVisible="False" />
+
+                <!-- Content Layout -->
+                <Grid Margin="15,11,13,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Column 0: Luminous Orb App Badge / Icon -->
+                    <Border x:Name="AppIconBadgeBorder"
+                            Grid.Column="0"
+                            Width="34"
+                            Height="34"
+                            CornerRadius="17"
+                            VerticalAlignment="Top"
+                            Margin="0,2,11,0"
+                            BorderThickness="1"
+                            BorderBrush="#777DD3FC">
+                        <Border.Background>
+                            <RadialGradientBrush GradientOrigin="0.3,0.25" Center="0.45,0.45" RadiusX="0.65" RadiusY="0.65">
+                                <GradientStop x:Name="OrbStop0" Color="#EE38BDF8" Offset="0.0" />
+                                <GradientStop x:Name="OrbStop1" Color="#D80284C7" Offset="0.68" />
+                                <GradientStop x:Name="OrbStop2" Color="#E60369A1" Offset="1.0" />
+                            </RadialGradientBrush>
+                        </Border.Background>
+                        <Grid>
+                            <!-- Miniature specular dot matching Bloop's glossy character sphere -->
+                            <Ellipse Width="7"
+                                     Height="4.5"
+                                     Fill="#66FFFFFF"
+                                     HorizontalAlignment="Left"
+                                     VerticalAlignment="Top"
+                                     Margin="6,5,0,0"
+                                     IsHitTestVisible="False" />
+                            <TextBlock x:Name="AppMonogramText"
+                                       Text="B"
+                                       Foreground="#F8FAFC"
+                                       FontSize="12.5"
+                                       FontWeight="Bold"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                            <Image x:Name="AppLogoImage"
+                                   Width="22"
+                                   Height="22"
+                                   Stretch="Uniform"
+                                   Visibility="Collapsed" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Column 1: Header Metadata, Title & Wrapped Body -->
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <!-- Row A: Source App Name + Priority Pill + Timestamp + Dismiss Button -->
+                        <DockPanel LastChildFill="False" Margin="0,0,0,3">
+                            <TextBlock x:Name="AppNameText"
+                                       Text="Bloop Companion"
+                                       Foreground="#7DD3FC"
+                                       FontSize="10.5"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       MaxWidth="135" />
+
+                            <Border x:Name="PriorityPillBorder"
+                                    CornerRadius="5"
+                                    Padding="5,0.8"
+                                    Margin="6,0,0,0"
+                                    BorderThickness="0.8"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed">
+                                <TextBlock x:Name="PriorityPillText"
+                                           Text="PRIORITY"
+                                           FontSize="8.5"
+                                           FontWeight="Bold"
+                                           Foreground="#E0F2FE" />
+                            </Border>
+
+                            <TextBlock x:Name="BatchCountPillText"
+                                       Text="+2 more"
+                                       Foreground="#94A3B8"
+                                       FontSize="9.8"
+                                       Margin="6,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Visibility="Collapsed" />
+
+                            <Button x:Name="DismissButton"
+                                    Content="✕"
+                                    DockPanel.Dock="Right"
+                                    Style="{StaticResource GlassIconButtonStyle}"
+                                    Click="OnDismissButtonClick"
+                                    Foreground="#94A3B8"
+                                    FontSize="10"
+                                    Padding="5,1"
+                                    Margin="4,-2,-2,0"
+                                    ToolTip="Dismiss toast" />
+
+                            <TextBlock x:Name="TimestampText"
+                                       Text="Just now"
+                                       DockPanel.Dock="Right"
+                                       Foreground="#94A3B8"
+                                       FontSize="9.8"
+                                       VerticalAlignment="Center"
+                                       Margin="6,0,2,0" />
+                        </DockPanel>
+
+                        <!-- Row B: Primary Notification Title -->
+                        <TextBlock x:Name="ToastTitleText"
+                                   Text="Notification Title"
+                                   Foreground="#F8FAFC"
+                                   FontSize="12.5"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxHeight="36"
+                                   Margin="0,0,0,2.5" />
+
+                        <!-- Row C: Secondary Message Body -->
+                        <TextBlock x:Name="ToastBodyText"
+                                   Text="Notification message body wraps cleanly across two to three lines."
+                                   Foreground="#CBD5E1"
+                                   FontSize="11.2"
+                                   TextWrapping="Wrap"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxHeight="48" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
